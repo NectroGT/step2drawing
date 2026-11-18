@@ -1,5 +1,6 @@
 """Turn a part (shape + dimension specs) into a dimensioned third-angle drawing (DXF + PNG)."""
-import math
+import math, os
+_DEBUG = bool(os.environ.get('S2D_DEBUG'))
 import cadquery as cq
 import ezdxf
 from ezdxf.enums import TextEntityAlignment
@@ -167,6 +168,12 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
     ds = dict(dimtxt=th, dimasz=th * 0.9, dimexo=th * 0.4, dimexe=th * 0.5, dimgap=th * 0.35,
               dimdec=2, dimzin=8, dimdsep=ord('.'), dimlfac=1.0 / SCL, dimtih=0, dimtoh=0, dimclrd=5, dimclre=5, dimclrt=7)
 
+    def _drop(dr):
+        name = dr.dimension.dxf.geometry
+        msp.delete_entity(dr.dimension)
+        if name in doc.blocks:
+            doc.blocks.delete_block(name, safe=False)
+
     def T(view, p):
         o = off[view]; return (p[0] + o[0], p[1] + o[1])
 
@@ -192,9 +199,8 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
         else:
             msp.add_line(T(a["view"], a["p1"]), T(a["view"], a["p2"]), dxfattribs={"layer": "CENTER"})
 
-    # dimensions
-    placed, long_n = [], {}
-    for dm in part["dims"]:
+    # dimensions: each one is tried in a few positions; the first whose text collides with nothing wins
+    def build(dm):
         v = dm["view"]; x0, y0, x1, y1 = bb[v]
         if dm["kind"] in ("h", "v"):
             p1, p2 = T(v, dm["p1"]), T(v, dm["p2"])
@@ -213,20 +219,27 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
                 base, angle = (xb, (p1[1] + p2[1]) / 2), 90
                 meas = abs(p2[1] - p1[1])
             assert abs(meas / SCL - dm["value"]) < 1e-3, (part_id, dm["name"], meas / SCL, dm["value"])
+            kw = {}
+            if dm.get("shift"):
+                kw["location"] = (base[0] + dm["shift"], base[1]) if angle == 0 else (base[0], base[1] + dm["shift"])
             d = msp.add_linear_dim(base=base, p1=p1, p2=p2, angle=angle, text=dm.get("text") or "<>",
-                                   override=ds, dxfattribs={"layer": "DIM"})
+                                   override=dict(ds, dimtmove=0) if kw else ds, dxfattribs={"layer": "DIM"}, **kw)
         elif dm["kind"] == "dia":
             assert abs(2 * dm["r"] / SCL - dm["value"]) < 1e-3
             txt = (dm.get("text") or "<>").replace("Ø<>", "<>")
             if len(txt) > 8:                 # long callout: leader out of the view, horizontal text
                 a_ = dm["angle"] if math.cos(math.radians(dm["angle"])) < 0 else 180 - dm["angle"]   # leader to the left
+                if dm.get("down"):
+                    a_ = -a_ if math.sin(math.radians(a_)) > 0 else a_
+                elif dm.get("up"):
+                    a_ = -a_ if math.sin(math.radians(a_)) < 0 else a_
                 cx, cy = T(v, dm["c"]); ux, uy = math.cos(math.radians(a_)), math.sin(math.radians(a_))
                 bx0, by0, bx1, by1 = x0 + off[v][0], y0 + off[v][1], x1 + off[v][0], y1 + off[v][1]
                 tx = ((bx1 if ux > 0 else bx0) - cx) / ux if abs(ux) > 1e-6 else 1e9
                 ty = ((by1 if uy > 0 else by0) - cy) / uy if abs(uy) > 1e-6 else 1e9
                 t = min(tx, ty) + 2.5 * th
                 loc = (cx + t * ux, cy + t * uy)
-                k = long_n.get(v, 0); long_n[v] = k + 1
+                k = dm.get("stack", 0)
                 if k:                                # stack further callouts above/below the first one
                     loc = (loc[0], loc[1] + (k if uy >= 0 else -k) * 2.6 * th)
                 d = msp.add_diameter_dim(center=(cx, cy), radius=dm["r"], location=loc, text=txt,
@@ -252,20 +265,121 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
             bx0, by0, bx1, by1 = x0 + off[v][0], y0 + off[v][1], x1 + off[v][0], y1 + off[v][1]
             tx = ((bx1 if ux > 0 else bx0) - cx) / ux if abs(ux) > 1e-6 else 1e9
             ty = ((by1 if uy > 0 else by0) - cy) / uy if abs(uy) > 1e-6 else 1e9
-            t = max(min(tx, ty), dm["r"]) + 1.5 * th
+            t = max(min(tx, ty), dm["r"]) + (1.5 + dm.get("push", 0)) * th
             d = msp.add_radius_dim(center=(cx, cy), radius=dm["r"], location=(cx + t * ux, cy + t * uy),
                                    text=(dm.get("text") or "<>").replace("R<>", "<>"),
                                    override=dict(ds, dimtoh=1, dimtix=0), dxfattribs={"layer": "DIM"})
         elif dm.get("inside") and dm["r"] > 2.2 * th:   # concave arc with room: text in the hollow, at the centre
             cx, cy = T(v, dm["c"]); ux, uy = math.cos(math.radians(dm["angle"])), math.sin(math.radians(dm["angle"]))
-            d = msp.add_radius_dim(center=(cx, cy), radius=dm["r"], location=(cx - 0.15 * dm["r"] * ux, cy - 0.15 * dm["r"] * uy),
+            f_ = 0.15 + dm.get("push", 0) * 0.2
+            d = msp.add_radius_dim(center=(cx, cy), radius=dm["r"], location=(cx - f_ * dm["r"] * ux, cy - f_ * dm["r"] * uy),
                                    text=(dm.get("text") or "<>").replace("R<>", "<>"),
                                    override=dict(ds, dimtih=1, dimtix=1), dxfattribs={"layer": "DIM"})
         else:
             d = msp.add_radius_dim(center=T(v, dm["c"]), radius=dm["r"], angle=dm["angle"],
                                    text=(dm.get("text") or "<>").replace("R<>", "<>"), override=ds, dxfattribs={"layer": "DIM"})
-        d.render()
-        placed.append(dm)
+        return d
+
+
+    def tw(dm):                                       # rough text width
+        return max(2, len(str(dm.get("text") or "")) + len(f'{dm["value"]:g}')) * 0.62 * th
+
+    def variants(dm):
+        k = dm["kind"]
+        if k in ("h", "v"):
+            w = tw(dm)
+            out = [dm] + [dict(dm, shift=f * w) for f in (0.9, -0.9, 1.8, -1.8)]
+            if dm.get("at") is None:
+                out += [dict(dm, tier=dm["tier"] + 1), dict(dm, tier=dm["tier"] + 1, shift=0.9 * w)]
+            return out
+        if k == "ang":
+            return [dict(dm, r=dm["r"] * f) for f in (1.0, 0.7, 1.35, 1.7, 0.5)]
+        if k == "dia" and len((dm.get("text") or "<>").replace("Ø<>", "<>")) > 8:
+            return [dict(dm, stack=j, **o) for o in ({}, {"down": 1}, {"up": 1}) for j in (0, 1, -1, 2, -2)]
+        if dm.get("outside") or (dm.get("inside") and dm["r"] > 2.2 * th):
+            return [dict(dm, angle=dm["angle"] + da, push=p) for p in (0, 1.5) for da in (0, 15, -15, 30, -30)]
+        return [dict(dm, angle=dm["angle"] + da) for da in (0, 30, -30, 60, -60, 90, -90, 135, -135, 180)]
+
+    def parts_of(d):
+        blk = doc.blocks.get(d.dimension.dxf.geometry)
+        boxes, segs = [], []
+        for e in blk:
+            t = e.dxftype()
+            if t in ("MTEXT", "TEXT"):
+                ext = ezdxf.bbox.extents([e])
+                if ext.has_data:
+                    g = 0.2 * th
+                    x0_, y0_, x1_, y1_ = ext.extmin.x, ext.extmin.y, ext.extmax.x, ext.extmax.y
+                    try:
+                        n = len(e.plain_text() if t == "MTEXT" else e.dxf.text)
+                    except Exception:
+                        n = 0
+                    rot = abs((e.dxf.get("rotation", 0) or 0) % 180 - 90) < 45       # vertical text
+                    want = n * 0.68 * th                     # rendered width runs wider than ezdxf's estimate
+                    if rot and (y1_ - y0_) < want:
+                        cy_ = (y0_ + y1_) / 2; y0_, y1_ = cy_ - want / 2, cy_ + want / 2
+                    elif not rot and (x1_ - x0_) < want:
+                        cx_ = (x0_ + x1_) / 2; x0_, x1_ = cx_ - want / 2, cx_ + want / 2
+                    boxes.append((x0_ - g, y0_ - g, x1_ + g, y1_ + g))
+            elif t == "LINE":
+                segs.append(((e.dxf.start.x, e.dxf.start.y), (e.dxf.end.x, e.dxf.end.y)))
+        return boxes, segs
+
+    def seg_hits_box(a, b, bx):
+        x0_, y0_, x1_, y1_ = bx
+        if max(a[0], b[0]) < x0_ or min(a[0], b[0]) > x1_ or max(a[1], b[1]) < y0_ or min(a[1], b[1]) > y1_:
+            return False
+        for t in (0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0):      # sampled test is plenty at drawing scale
+            px, py = a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])
+            if x0_ <= px <= x1_ and y0_ <= py <= y1_:
+                return True
+        return False
+
+    def ovl(p, q):
+        return max(0.0, min(p[2], q[2]) - max(p[0], q[0])) * max(0.0, min(p[3], q[3]) - max(p[1], q[1]))
+
+    geo = []                                            # visible part edges as segments (sheet coordinates)
+    for gv in VIEWS:
+        for g in proj[gv][0]:
+            pts = [g[1], g[2]] if g[0] == "line" else (
+                [(g[1][0] + g[2] * math.cos(t_ * math.pi / 8), g[1][1] + g[2] * math.sin(t_ * math.pi / 8)) for t_ in range(17)]
+                if g[0] == "circle" else g[1])
+            pts = [T(gv, p_) for p_ in pts]
+            geo += list(zip(pts[:-1], pts[1:]))
+
+    placed, txt_boxes, dim_segs = [], [], []
+    # fixed-position dimensions first (their extension lines cannot move), movable callouts last
+    order = {"h": 0, "v": 0, "ang": 1, "rad": 2, "dia": 2}
+    view_boxes = [(bb[gv][0] + off[gv][0], bb[gv][1] + off[gv][1], bb[gv][2] + off[gv][0], bb[gv][3] + off[gv][1])
+                  for gv in VIEWS]
+    for dm in sorted(part["dims"], key=lambda d: order.get(d["kind"], 3)):
+        best = None
+        free_text = dm.get("outside") or (dm["kind"] == "dia" and len((dm.get("text") or "<>").replace("Ø<>", "<>")) > 8)
+        for cand in variants(dm):
+            d = build(cand); d.render()
+            boxes, segs = parts_of(d)
+            score = 0.0
+            for bx in boxes:
+                score += sum(100.0 * (1 + ovl(bx, q)) for q in txt_boxes if ovl(bx, q) > 0)
+                score += sum(3.0 for a, b in dim_segs if seg_hits_box(a, b, bx))
+                score += sum(1.0 for a, b in geo if seg_hits_box(a, b, bx))
+                if free_text:                            # text that is meant to sit outside the views
+                    score += sum(20.0 for q in view_boxes if ovl(bx, q) > 0)
+            for a, b in segs:                            # this dimension's lines through earlier text
+                score += sum(3.0 for q in txt_boxes if seg_hits_box(a, b, q))
+            if _DEBUG:
+                print("  ", cand["name"], {k: cand.get(k) for k in ("stack", "down", "up", "shift", "tier", "angle", "push") if cand.get(k) is not None}, round(score, 1))
+            if best is None or score < best[0]:
+                if best is not None:
+                    _drop(best[1])
+                best = (score, d, boxes, segs, cand)
+            else:
+                _drop(d)
+            if score == 0:
+                break
+        _, d, boxes, segs, cand = best
+        txt_boxes += boxes; dim_segs += segs
+        placed.append(cand)
 
     # notes
     for n in part.get("notes", []):
