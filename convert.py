@@ -102,6 +102,13 @@ def draw_part(solid, name, unit, M, folder):
     if "src_angle" not in M["features"]:
         keep = [k and c["kind"] != "ang" and "incl_corner" not in c["srcs"] for c, k in zip(C, keep)]
     sel = drop_redundant([c for c, k in zip(C, keep) if k])
+    uniq = []                                        # same callout twice from rounding noise (75 vs 75.001)
+    for c in sel:
+        if c["kind"] in ("dia", "rad") and any(u["kind"] == c["kind"] and abs(u["value"] - c["value"]) < 0.01 and
+                                               (u["srcs"] & c["srcs"]) for u in uniq):
+            continue
+        uniq.append(c)
+    sel = uniq
     dims, _, axes = to_specs(sel)
     base_dims = list(dims)
     if "src_angle" not in M["features"]:            # older model: add angled-wall dims by rule

@@ -133,6 +133,14 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
     th = max(2.5, round(size / 28, 1))         # text height
     gap = 9 * th                               # spacing between views (room for dims)
     sp = 2.6 * th                              # spacing between dimension tiers
+    # all text reads horizontally, so a stack of vertical dimensions needs room for the widest value
+    def _w(d):
+        t = (d.get("text") or "<>").replace("<>", f'{d["value"]:g}')
+        return len(t) * 0.68 * th
+    vdims = [d for d in part["dims"] if d["kind"] == "v"]
+    spv = max(sp, max((_w(d) for d in vdims), default=0) + 1.2 * th)
+    vt = max((d.get("tier", 1) for d in vdims if d.get("at") is None), default=0)
+    gapx = gap + vt * (spv - sp)
 
     proj = {}
     for v in VIEWS:
@@ -153,8 +161,8 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
     # third-angle layout: top above front, right to the right of front, iso top-right
     off = {"front": (0.0, 0.0)}
     off["top"] = (0.0, bb["front"][3] - bb["top"][1] + gap)
-    off["right"] = (bb["front"][2] - bb["right"][0] + gap, 0.0)
-    off["iso"] = (bb["front"][2] - bb["iso"][0] + gap, bb["front"][3] - bb["iso"][1] + gap)
+    off["right"] = (bb["front"][2] - bb["right"][0] + gapx, 0.0)
+    off["iso"] = (bb["front"][2] - bb["iso"][0] + gapx, bb["front"][3] - bb["iso"][1] + gap)
     # align top view x-extents with front, right view z with front (same projection => automatic)
 
     doc = ezdxf.new("R2010", setup=True)
@@ -166,7 +174,7 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
         doc.layers.add(name, color=color, linetype=lt, lineweight=lw)
     msp = doc.modelspace()
     ds = dict(dimtxt=th, dimasz=th * 0.9, dimexo=th * 0.4, dimexe=th * 0.5, dimgap=th * 0.35,
-              dimdec=2, dimzin=8, dimdsep=ord('.'), dimlfac=1.0 / SCL, dimtih=0, dimtoh=0, dimclrd=5, dimclre=5, dimclrt=7)
+              dimdec=2, dimzin=8, dimdsep=ord('.'), dimlfac=1.0 / SCL, dimtih=1, dimtoh=1, dimclrd=5, dimclre=5, dimclrt=7)
 
     def _drop(dr):
         name = dr.dimension.dxf.geometry
@@ -215,15 +223,16 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
                 if dm.get("at") is not None:
                     xb = dm["at"] + off[v][0]
                 else:
-                    xb = (x0 - dm["tier"] * sp if dm["side"] == "left" else x1 + dm["tier"] * sp) + off[v][0]
+                    xb = (x0 - dm["tier"] * spv if dm["side"] == "left" else x1 + dm["tier"] * spv) + off[v][0]
                 base, angle = (xb, (p1[1] + p2[1]) / 2), 90
                 meas = abs(p2[1] - p1[1])
             assert abs(meas / SCL - dm["value"]) < 1e-3, (part_id, dm["name"], meas / SCL, dm["value"])
             kw = {}
+            vt_ = {"dimtad": 0} if dm["kind"] == "v" else {}      # horizontal text centred in a vertical dim line
             if dm.get("shift"):
                 kw["location"] = (base[0] + dm["shift"], base[1]) if angle == 0 else (base[0], base[1] + dm["shift"])
             d = msp.add_linear_dim(base=base, p1=p1, p2=p2, angle=angle, text=dm.get("text") or "<>",
-                                   override=dict(ds, dimtmove=0) if kw else ds, dxfattribs={"layer": "DIM"}, **kw)
+                                   override=dict(ds, dimtmove=0, **vt_) if kw else dict(ds, **vt_), dxfattribs={"layer": "DIM"}, **kw)
         elif dm["kind"] == "dia":
             assert abs(2 * dm["r"] / SCL - dm["value"]) < 1e-3
             txt = (dm.get("text") or "<>").replace("Ø<>", "<>")
@@ -244,9 +253,11 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
                     loc = (loc[0], loc[1] + (k if uy >= 0 else -k) * 2.6 * th)
                 d = msp.add_diameter_dim(center=(cx, cy), radius=dm["r"], location=loc, text=txt,
                                          override=dict(ds, dimtoh=1, dimtix=0), dxfattribs={"layer": "DIM"})
-            else:
-                d = msp.add_diameter_dim(center=T(v, dm["c"]), radius=dm["r"], angle=dm["angle"],
-                                         text=txt, override=ds, dxfattribs={"layer": "DIM"})
+            else:                            # short callout: leader out of the circle, horizontal text
+                cx, cy = T(v, dm["c"]); ux, uy = math.cos(math.radians(dm["angle"])), math.sin(math.radians(dm["angle"]))
+                t = dm["r"] + (2.0 + dm.get("push", 0)) * th
+                d = msp.add_diameter_dim(center=(cx, cy), radius=dm["r"], location=(cx + t * ux, cy + t * uy),
+                                         text=txt, override=dict(ds, dimtoh=1, dimtix=0), dxfattribs={"layer": "DIM"})
         elif dm["kind"] == "ang":
             c = T(v, dm["vertex"]); pa = T(v, dm["p_line"]); pb = T(v, dm["p_ref"])
             if (pa[0] - c[0]) * (pb[1] - c[1]) - (pa[1] - c[1]) * (pb[0] - c[0]) < 0:
@@ -275,9 +286,12 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
             d = msp.add_radius_dim(center=(cx, cy), radius=dm["r"], location=(cx - f_ * dm["r"] * ux, cy - f_ * dm["r"] * uy),
                                    text=(dm.get("text") or "<>").replace("R<>", "<>"),
                                    override=dict(ds, dimtih=1, dimtix=1), dxfattribs={"layer": "DIM"})
-        else:
-            d = msp.add_radius_dim(center=T(v, dm["c"]), radius=dm["r"], angle=dm["angle"],
-                                   text=(dm.get("text") or "<>").replace("R<>", "<>"), override=ds, dxfattribs={"layer": "DIM"})
+        else:                                  # leader from outside the arc, horizontal text
+            cx, cy = T(v, dm["c"]); ux, uy = math.cos(math.radians(dm["angle"])), math.sin(math.radians(dm["angle"]))
+            t = dm["r"] + (2.0 + dm.get("push", 0)) * th
+            d = msp.add_radius_dim(center=(cx, cy), radius=dm["r"], location=(cx + t * ux, cy + t * uy),
+                                   text=(dm.get("text") or "<>").replace("R<>", "<>"),
+                                   override=dict(ds, dimtoh=1, dimtix=0), dxfattribs={"layer": "DIM"})
         return d
 
 
@@ -298,7 +312,7 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
             return [dict(dm, stack=j, **o) for o in ({}, {"down": 1}, {"up": 1}) for j in (0, 1, -1, 2, -2)]
         if dm.get("outside") or (dm.get("inside") and dm["r"] > 2.2 * th):
             return [dict(dm, angle=dm["angle"] + da, push=p) for p in (0, 1.5) for da in (0, 15, -15, 30, -30)]
-        return [dict(dm, angle=dm["angle"] + da) for da in (0, 30, -30, 60, -60, 90, -90, 135, -135, 180)]
+        return [dict(dm, angle=dm["angle"] + da, push=p) for p in (0, 2.0) for da in (0, 30, -30, 60, -60, 90, -90, 135, -135, 180)]
 
     def parts_of(d):
         blk = doc.blocks.get(d.dimension.dxf.geometry)
@@ -357,6 +371,9 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
         free_text = dm.get("outside") or (dm["kind"] == "dia" and len((dm.get("text") or "<>").replace("Ø<>", "<>")) > 8)
         for cand in variants(dm):
             d = build(cand); d.render()
+            for e in doc.blocks.get(d.dimension.dxf.geometry):     # every value reads horizontally
+                if e.dxftype() in ("MTEXT", "TEXT") and abs(e.dxf.get("rotation", 0) or 0) > 1e-6:
+                    e.dxf.rotation = 0
             boxes, segs = parts_of(d)
             score = 0.0
             for bx in boxes:
