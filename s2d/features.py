@@ -66,12 +66,19 @@ def extract(shape):
 
     cyl = {}            # (axis, c1, c2, dia) -> info
     levels = {a: set() for a in AX}
+    floors = []
     for f in comp.Faces():
         gt = f.geomType()
         if gt == "PLANE":
             n = f.normalAt(f.Center()); a = axis_of((n.x, n.y, n.z))
             if a:
                 levels[a].add(rv(getattr(f.Center(), a)))
+                lv = getattr(f.Center(), a)
+                if bmin[a] + 1e-3 < lv < bmax[a] - 1e-3:           # recessed or raised flat: pocket floor, step
+                    fb = f.BoundingBox()
+                    floors.append(dict(axis=a, level=lv, area=f.Area(),
+                                       lo={"x": fb.xmin, "y": fb.ymin, "z": fb.zmin},
+                                       hi={"x": fb.xmax, "y": fb.ymax, "z": fb.zmax}))
         elif gt == "CYLINDER":
             from OCP.BRepAdaptor import BRepAdaptor_Surface
             c = BRepAdaptor_Surface(f.wrapped).Cylinder()   # handles trimmed surfaces too
@@ -119,7 +126,7 @@ def extract(shape):
     for g in cyl.values():
         if g["full"] and g["internal"]:
             hg[(g["axis"], g["dia"])].append(g)
-    F = dict(solids=len(solids), bmin=bmin, bmax=bmax,
+    F = dict(solids=len(solids), bmin=bmin, bmax=bmax, floors=floors,
              ext={a: bmax[a] - bmin[a] for a in AX}, cyl=list(cyl.values()),
              holes={k: v for k, v in hg.items()}, levels={a: sorted(v) for a, v in levels.items()})
     try:                                   # angled walls + countersinks
@@ -246,6 +253,27 @@ def candidates(F):
         for v, (P, ga) in tang.items():
             for ref in (lo, hi):
                 add(("lin", t, rv(abs(v - ref))), "arc_pos", dict(type="lin", axis=t, p1=anchor_pt(ref, None), p2=dict(P), hole_axis=ga))
+    # pockets and steps: size of each recessed/raised flat floor, and its position from the part edges
+    big = max(F["ext"].values())
+    seen_fl = set()
+    for fl in F.get("floors", []):
+        if fl["area"] < 0.01 * big * big:
+            continue
+        a = fl["axis"]; o = [t for t in AX if t != a]
+        sig = (a, rv(fl["level"]), tuple(rv(fl["hi"][t] - fl["lo"][t]) for t in o))
+        dup = sig in seen_fl; seen_fl.add(sig)
+        for t in o:
+            ext_t = fl["hi"][t] - fl["lo"][t]
+            if not (0.05 < ext_t < F["ext"][t] - 0.05):
+                continue
+            u = [q for q in o if q != t][0]
+            P1 = {a: fl["level"], u: fl["lo"][u], t: fl["lo"][t]}; P2 = dict(P1); P2[t] = fl["hi"][t]
+            add(("lin", t, rv(ext_t)), "pocket_size", dict(type="lin", axis=t, p1=P1, p2=P2, hole_axis=a),
+                count=2 if dup else 1)
+            for edge, ref in ((fl["lo"][t], F["bmin"][t]), (fl["hi"][t], F["bmax"][t])):
+                if abs(edge - ref) > 0.05:
+                    Q1 = dict(P1); Q1[t] = ref; Q2 = dict(P1); Q2[t] = edge
+                    add(("lin", t, rv(abs(edge - ref))), "pocket_pos", dict(type="lin", axis=t, p1=Q1, p2=Q2, hole_axis=a))
     # spacing between centres of equal, aligned partial arcs (e.g. the flat between two fillets)
     parts_ = [g for g in F["cyl"] if not g["full"]]
     for i, g1 in enumerate(parts_):
@@ -287,7 +315,7 @@ def candidates(F):
 
 
 SOURCES = ["overall", "level_gap", "level_pos", "hole_dia", "ext_dia", "radius_concave", "radius_convex",
-           "hole_pos", "hole_pitch", "hole_span", "bolt_circle", "angle", "angle_incl", "incl_corner", "arc_gap", "arc_pos", "arc_pitch"]
+           "hole_pos", "hole_pitch", "hole_span", "bolt_circle", "angle", "angle_incl", "incl_corner", "arc_gap", "arc_pos", "arc_pitch", "pocket_size", "pocket_pos"]
 
 
 def part_context(F, cands):

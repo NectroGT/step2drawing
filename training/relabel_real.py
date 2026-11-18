@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from features import extract, candidates
 
 AX = "xyz"
-POSITIONAL = {"hole_pos", "level_pos", "incl_corner"}
+POSITIONAL = {"hole_pos", "level_pos", "incl_corner", "pocket_pos", "arc_pos"}
 L = {k: v for k, v in json.load(open(sys.argv[1])).items() if not k.startswith("_")}
 real_dir, aug = sys.argv[2], sys.argv[3]
 

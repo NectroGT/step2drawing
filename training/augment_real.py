@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 AX = "xyz"
 SCALES = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
-POSITIONAL = {"hole_pos", "level_pos", "incl_corner"}
+POSITIONAL = {"hole_pos", "level_pos", "incl_corner", "pocket_pos", "arc_pos"}
 TOL = 0.002
 
 
