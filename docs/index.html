@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>step2drawing: STEP to engineering drawing</title>
+<style>
+  :root { --ink:#1b1f24; --muted:#5b6470; --line:#d8dde3; --accent:#1f5fbf; --bg:#f7f8fa; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:var(--bg); }
+  header { background:#fff; border-bottom:1px solid var(--line); }
+  .wrap { max-width:1040px; margin:0 auto; padding:0 24px; }
+  .hero { padding:56px 0 40px; }
+  h1 { font-size:2.2rem; margin:0 0 12px; letter-spacing:-.01em; }
+  .lede { font-size:1.15rem; color:var(--muted); max-width:640px; margin:0 0 28px; }
+  .btn { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; padding:12px 22px; border-radius:6px; font-weight:600; margin-right:10px; }
+  .btn.ghost { background:#fff; color:var(--accent); border:1px solid var(--accent); }
+  figure { margin:40px 0 0; background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px; }
+  figure img { width:100%; display:block; }
+  figcaption { color:var(--muted); font-size:.9rem; padding:8px 4px 0; }
+  section { padding:48px 0; }
+  h2 { font-size:1.35rem; margin:0 0 16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:18px; }
+  .card b { display:block; margin-bottom:6px; }
+  .card p { margin:0; color:var(--muted); font-size:.95rem; }
+  ol { padding-left:20px; } li { margin:6px 0; }
+  code { background:#eef1f5; padding:2px 6px; border-radius:4px; font-size:.9em; }
+  pre { background:#1b1f24; color:#e8eaed; padding:16px; border-radius:8px; overflow:auto; }
+  .note { border-left:3px solid #c98a00; background:#fff8e6; padding:12px 16px; border-radius:4px; color:#5a4300; }
+  footer { color:var(--muted); font-size:.85rem; padding:32px 0 48px; border-top:1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap hero">
+    <h1>STEP → Engineering Drawing</h1>
+    <p class="lede">Upload a <code>.stp</code> / <code>.step</code> part or assembly and get a dimensioned drawing set back: orthographic views with hidden lines, model-selected dimensions, an assembly sheet with balloons and a bill of materials, as PDF and DXF.</p>
+    <a class="btn" href="SPACE_URL">Open the web app</a>
+    <a class="btn ghost" href="REPO_URL">Source code</a>
+    <figure>
+      <img src="sample.png" alt="Example output: an assembly with five parts, each with dimensioned views, balloons and a parts list">
+      <figcaption>Example output for a five-part test assembly, generated in about 8 seconds.</figcaption>
+    </figure>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>What you get</h2>
+    <div class="grid">
+      <div class="card"><b>Part drawings</b><p>Front, top, side and isometric views per unique part, with hidden lines, center lines and a title block.</p></div>
+      <div class="card"><b>Smart dimensions</b><p>A trained model picks which sizes, hole diameters, positions and thread callouts (M2–M12) to show.</p></div>
+      <div class="card"><b>Assembly sheet</b><p>Repeated parts are grouped, ballooned and listed with quantities in a BOM table.</p></div>
+      <div class="card"><b>Correct units</b><p>Units are read from the STEP file (mm or inch) and printed on every sheet, with a manual override.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>How to use it</h2>
+    <ol>
+      <li>Open the <a href="SPACE_URL">web app</a>.</li>
+      <li>Drop your STEP file in and press <b>Make drawings</b>.</li>
+      <li>Download the PDF, or the ZIP with DXF files (for AutoCAD, DraftSight, LibreCAD) and <code>bom.csv</code>.</li>
+    </ol>
+    <p class="note">Dimensions are chosen automatically. Check every drawing before using it for manufacturing. Very complex parts (castings, many features) are flagged and need manual cleanup.</p>
+  </section>
+
+  <section>
+    <h2>Run it on your own computer</h2>
+<pre>pip install -r requirements.txt
+python convert.py mypart.stp              # command line
+pip install gradio &amp;&amp; python app.py        # same web app, at http://127.0.0.1:7860</pre>
+    <p>On Windows you can also drag STEP files onto <code>convert.bat</code>.</p>
+  </section>
+</main>
+
+<footer class="wrap">Built with CadQuery / OpenCascade, ezdxf and scikit-learn.</footer>
+</body>
+</html>

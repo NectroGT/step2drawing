@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+drawings_out/
+drawings/
+*.stp
+*.step
+*.STEP
+*.STP
+*.zip
+.venv/
+.DS_Store
