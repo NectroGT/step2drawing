@@ -11,7 +11,11 @@ import math
 
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 
-from .select import CIRCLE_VIEW, p2
+CIRCLE_VIEW = {"z": "top", "x": "right", "y": "front"}
+
+
+def p2(view, p):
+    return {"front": (p["x"], p["z"]), "top": (p["x"], p["y"]), "right": (p["y"], p["z"])}[view]
 
 AX = ("x", "y", "z")
 # 2D coordinates (h, v) of each view, as 3D axis names
@@ -159,7 +163,7 @@ def analyze(solid, F):
                 far2 = max((m["a"], m["b"]), key=lambda p: math.dist(p, X))
                 r = min(0.5 * min(math.dist(far1, X), math.dist(far2, X)), 5 * th)
                 angles.append(dict(view=ln["view"], kind="ang", vertex=X, p_line=far1, p_ref=far2, r=r,
-                                   value=val, name=f'["ang", "{ln["view"]}", {val}]'))
+                                   value=val, included=True, name=f'["ang", "{ln["view"]}", {val}]'))
                 continue
         used.add(i)
         ref_h = a_h <= 45
@@ -177,15 +181,13 @@ def analyze(solid, F):
         angles.append(dict(view=ln["view"], kind="ang", vertex=vtx, p_line=far, p_ref=ref,
                            r=min(0.55 * ln["L"], 6 * th), value=val, name=f'["ang", "{ln["view"]}", {val}]'))
 
-    # ---- virtual corners of inclined walls (top view only: that is where pockets/ribs show) ----
+    # ---- virtual corners of inclined walls, in every view where such walls are seen edge-on ----
     corners = []
     tol = max(3.0, 0.08 * size)
     by_view = {}
     for ln in lines:
         by_view.setdefault(ln["view"], []).append(ln)
     for view, ls in by_view.items():
-        if view != "top":
-            continue
         others = ls + _axis_lines(solid, view)
         h, v = VIEW_AXES[view]
         cx = (F["bmin"][h] + F["bmax"][h]) / 2
@@ -204,7 +206,6 @@ def analyze(solid, F):
                         best = (dd, X)
                 if best:
                     pts.append(best[1])
-        # keep one of each mirror pair (symmetric about the vertical centre line), dedupe
         uniq = []
         for p in pts:
             if any(math.dist(p, q) < 1e-2 for q in uniq):
@@ -212,7 +213,7 @@ def analyze(solid, F):
             if p[0] > cx + 1e-3 and any(math.dist((2 * cx - p[0], p[1]), q) < 1e-2 for q in pts):
                 continue
             uniq.append(p)
-        done = set()
+        done, vc = set(), []
         for p in uniq:
             for k, ax in ((0, h), (1, v)):
                 val = _r(p[k] - bmin[ax])
@@ -220,10 +221,10 @@ def analyze(solid, F):
                     continue
                 done.add((ax, val))
                 o_ = (bmin[h], p[1]) if k == 0 else (p[0], bmin[v])
-                corners.append(dict(view=view, kind="h" if k == 0 else "v", p1=o_, p2=p, value=abs(p[k] - bmin[ax]),
-                                    name=f'["corner", "{ax}", {val}]', side="above" if k == 0 else "left"))
-    if len(corners) > 6:          # many angled faces = polygonal shape (hex etc.): positions would flood the view
-        corners = []
+                vc.append(dict(view=view, kind="h" if k == 0 else "v", ax=ax, p1=o_, p2=p, value=abs(p[k] - bmin[ax]),
+                               name=f'["corner", "{ax}", {val}]', side="above" if k == 0 else "left"))
+        if len(vc) <= 6:          # more = polygonal shape (hex etc.): positions would flood the view
+            corners += vc
     per_view = {}
     angles = [a for a in angles if per_view.setdefault(a["view"], []).append(a) or len(per_view[a["view"]]) <= 3]
     return dict(angles=angles, corners=corners, csk=_countersinks(solid, F))

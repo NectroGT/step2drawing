@@ -27,8 +27,14 @@ def to_specs(sel):
                 view = "top" if ax == "y" else "front"
             kind = HV[view][ax]
             side = ("below" if kind == "h" else "right") if "hole_axis" not in a else ("above" if kind == "h" else "left")
-            lin.append(dict(view=view, kind=kind, p1=p2(view, a["p1"]), p2=p2(view, a["p2"]), value=c["value"],
-                            name=json.dumps(c["key"]), side=side))
+            d = dict(view=view, kind=kind, p1=p2(view, a["p1"]), p2=p2(view, a["p2"]), value=c["value"],
+                     name=json.dumps(c["key"]), side=side)
+            if a.get("pitch_r"):                 # spacing of two fillets: dimension right next to them
+                k2 = 1 if kind == "h" else 0
+                d["at"] = min(d["p1"][k2], d["p2"][k2]) - 1.75 * a["pitch_r"]
+                dims.append(d)
+                continue
+            lin.append(d)
         elif a["type"] == "dia":
             ax = a["axis"]
             if a.get("bc"):
@@ -52,10 +58,15 @@ def to_specs(sel):
                     txt += f" CSK Ø{cd:g} X {ca:g}°"
                 dims.append(dict(view=view, kind="dia", c=p2(view, a["center"]), r=a["r"], value=c["value"],
                                  name=json.dumps(c["key"]), angle=next_angle(view), text=txt))
+        elif a["type"] == "ang":
+            dims.append(dict(view=a["view"], kind="ang", vertex=a["vertex"], p_line=a["p_line"], p_ref=a["p_ref"],
+                             r=a["r"], value=c["value"], name=json.dumps(c["key"])))
         else:  # radius
             view = CIRCLE_VIEW[a["axis"]]
             dims.append(dict(view=view, kind="rad", c=p2(view, a["center"]), r=a["r"], value=c["value"],
-                             name=json.dumps(c["key"]), angle=next_angle(view), text="R<>"))
+                             name=json.dumps(c["key"]), angle=a["ang"] if "ang" in a else next_angle(view), text="R<>",
+                             outside="ang" in a and c["srcs"] <= {"radius_convex"},
+                             inside="ang" in a and c["srcs"] <= {"radius_concave"}))
     # stack linear dims in tiers per (view, side): shortest closest to the part
     groups = {}
     for d in lin:

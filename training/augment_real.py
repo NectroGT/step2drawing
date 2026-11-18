@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 AX = "xyz"
 SCALES = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
-POSITIONAL = {"hole_pos", "level_pos"}
+POSITIONAL = {"hole_pos", "level_pos", "incl_corner"}
 TOL = 0.002
 
 
@@ -55,6 +55,9 @@ def map_labels(C_new, keep, perm, signs, s, ext_orig):
     labels = []
     for c in C_new:
         key = c["key"]; v = key[-1] / s
+        if key[0] == "ang":                     # angles do not scale and survive 90-degree rotations
+            labels.append(int(any(k[0] == "ang" and abs(k[-1] - key[-1]) <= 0.11 for k in keep)))
+            continue
         if key[0] in ("dia", "rad"):
             labels.append(int(any(kk == key[0] and abs(kv - v) <= TOL for kk, kv in kd)))
             continue

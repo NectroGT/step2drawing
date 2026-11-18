@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from features import extract, candidates
 
 AX = "xyz"
-POSITIONAL = {"hole_pos", "level_pos"}
+POSITIONAL = {"hole_pos", "level_pos", "incl_corner"}
 L = {k: v for k, v in json.load(open(sys.argv[1])).items() if not k.startswith("_")}
 real_dir, aug = sys.argv[2], sys.argv[3]
 
@@ -35,18 +35,22 @@ for m in man:
     chosen = []
     for k in L[pid]["keep"]:
         k = tuple(k); c0 = C0[k]
-        if k[0] in ("dia", "rad"):
+        if k[0] == "ang":
+            want_kind, want_axis, want_v = "ang", None, k[-1]
+        elif k[0] in ("dia", "rad"):
             want_kind, want_axis, want_v = k[0], None, k[-1] * s
         else:
             a = AX.index(k[1]); j = perm.index(a); flipped = signs[j] < 0
             purely_pos = c0["srcs"] <= POSITIONAL
             v = (ext[k[1]] - k[2]) if (flipped and purely_pos) else k[2]
             want_kind, want_axis, want_v = "lin", AX[j], v * s
+            if "incl_corner" in c0["srcs"] and flipped:     # mirrored corner pairs keep their value
+                want_v = [v * s, k[2] * s]
         best, bd = None, 1e9
         for i, ck in cand.items():
             if ck[0] != want_kind or (want_axis and ck[1] != want_axis) or i in chosen:
                 continue
-            d = abs(ck[-1] - want_v)
+            d = min(abs(ck[-1] - w) for w in (want_v if isinstance(want_v, list) else [want_v]))
             if d < bd:
                 best, bd = i, d
         if best is not None and bd <= 0.002 + 0.001 * s:

@@ -10,6 +10,10 @@ candidates(feat) -> list of deduplicated candidate dimensions. Each has
 import math, collections
 import cadquery as cq
 from OCP.BRepTools import BRepTools
+try:
+    from .inclined import analyze as _inclined
+except ImportError:                       # flat import (training scripts)
+    from inclined import analyze as _inclined
 
 AX = "xyz"
 # ISO metric threads as they appear in STEP files: tap drill or minor (core) diameter
@@ -85,8 +89,29 @@ def extract(shape):
             g = cyl.setdefault(key, dict(axis=a, other=o, c=(key[1], key[2]), dia=key[3], span=0.0,
                                          internal=internal, lo=lo, hi=hi, nfaces=0))
             g["span"] += (umax - umin); g["lo"] = min(g["lo"], lo); g["hi"] = max(g["hi"], hi); g["nfaces"] += 1
+            pos = c.Position(); X_ = pos.XDirection(); Y_ = pos.YDirection()
+            g.setdefault("arcs", []).append(dict(umin=umin, umax=umax, X=(X_.X(), X_.Y(), X_.Z()),
+                                                 Y=(Y_.X(), Y_.Y(), Y_.Z()), mid=(lo + hi) / 2, area=f.Area()))
     for g in cyl.values():
         g["full"] = g["span"] > 2 * math.pi - 1e-3
+        # partial arcs: tangent extremes (quadrant points) that lie on the arc, and the arc's mid direction
+        g["quads"] = []
+        if not g["full"]:
+            a, o = g["axis"], g["other"]; r = g["dia"] / 2
+            for arc in g["arcs"]:
+                for t in o:
+                    for sgn in (1, -1):
+                        e = [0.0, 0.0, 0.0]; e[AX.index(t)] = sgn
+                        u = math.atan2(sum(e[i] * arc["Y"][i] for i in range(3)), sum(e[i] * arc["X"][i] for i in range(3)))
+                        while u < arc["umin"] - 1e-6:
+                            u += 2 * math.pi
+                        if u <= arc["umax"] + 1e-6:
+                            P = {a: arc["mid"], o[0]: g["c"][0], o[1]: g["c"][1]}
+                            P[t] += sgn * r
+                            g["quads"].append((t, rv(P[t]), P))
+            big_arc = max(g["arcs"], key=lambda q: q["area"])
+            um = (big_arc["umin"] + big_arc["umax"]) / 2
+            g["mid_dir"] = tuple(math.cos(um) * big_arc["X"][i] + math.sin(um) * big_arc["Y"][i] for i in range(3))
         g["through"] = abs(g["lo"] - bmin[g["axis"]]) < 1e-2 and abs(g["hi"] - bmax[g["axis"]]) < 1e-2
         g["length"] = g["hi"] - g["lo"]
     # hole groups: full internal cylinders with same axis direction and diameter
@@ -94,9 +119,14 @@ def extract(shape):
     for g in cyl.values():
         if g["full"] and g["internal"]:
             hg[(g["axis"], g["dia"])].append(g)
-    return dict(solids=len(solids), bmin=bmin, bmax=bmax,
-                ext={a: bmax[a] - bmin[a] for a in AX}, cyl=list(cyl.values()),
-                holes={k: v for k, v in hg.items()}, levels={a: sorted(v) for a, v in levels.items()})
+    F = dict(solids=len(solids), bmin=bmin, bmax=bmax,
+             ext={a: bmax[a] - bmin[a] for a in AX}, cyl=list(cyl.values()),
+             holes={k: v for k, v in hg.items()}, levels={a: sorted(v) for a, v in levels.items()})
+    try:                                   # angled walls + countersinks
+        F["incl"] = _inclined(comp, F)
+    except Exception:
+        F["incl"] = dict(angles=[], corners=[], csk={})
+    return F
 
 
 def candidates(F):
@@ -143,8 +173,12 @@ def candidates(F):
             src = "hole_dia" if g["internal"] else "ext_dia"
             add(("dia", g["dia"]), src, anc, internal=g["internal"], through=g["through"], cyl_len=g["length"])
         else:
-            add(("rad", rv(g["dia"] / 2)), "radius_concave" if g["internal"] else "radius_convex",
-                dict(type="rad", axis=a, center=ctr, r=g["dia"] / 2))
+            anc_r = dict(type="rad", axis=a, center=ctr, r=g["dia"] / 2)
+            if g.get("mid_dir"):
+                view = {"z": ("x", "y"), "x": ("y", "z"), "y": ("x", "z")}[a]
+                md = dict(zip(AX, g["mid_dir"]))
+                anc_r["ang"] = math.degrees(math.atan2(md[view[1]], md[view[0]]))
+            add(("rad", rv(g["dia"] / 2)), "radius_concave" if g["internal"] else "radius_convex", anc_r)
     # hole groups: count, positions, pitches, spans, bolt circles
     for (a, d), gs in F["holes"].items():
         centers = sorted({g["c"] for g in gs})
@@ -187,6 +221,62 @@ def candidates(F):
             if max(rs) - min(rs) < 1e-3 and rs[0] > 1e-3 and regular:
                 ctr = {a: hz, o[0]: cx, o[1]: cy}
                 add(("dia", rv(2 * rs[0])), "bolt_circle", dict(type="dia", axis=a, center=ctr, r=rs[0], bc=True), count=n)
+    # arc edges: tangent lines of partial arcs, combined with flat-face levels (e.g. hook gap to an arc top)
+    for t in AX:
+        planes = {rv(v) for v in [F["bmin"][t], F["bmax"][t]] + F["levels"][t]}
+        tang = {}
+        for g in F["cyl"]:
+            for (tt, v, P) in g.get("quads", []):
+                if tt == t and not any(abs(v - p) < 2e-3 for p in planes) and v not in tang:
+                    tang[v] = (P, g["axis"])
+        if not tang:
+            continue
+        pts = sorted([(v, None, None) for v in planes] + [(v, P, ga) for v, (P, ga) in tang.items()])
+        def anchor_pt(v, P):
+            if P is not None:
+                return dict(P)
+            q = dict(F["bmin"]); q[t] = v; return q
+        for i in range(len(pts) - 1):
+            (v1, P1, a1), (v2, P2, a2) = pts[i], pts[i + 1]
+            if P1 is None and P2 is None:
+                continue
+            ha = a1 or a2
+            add(("lin", t, rv(v2 - v1)), "arc_gap", dict(type="lin", axis=t, p1=anchor_pt(v1, P1), p2=anchor_pt(v2, P2), hole_axis=ha))
+        lo = rv(F["bmin"][t]); hi = rv(F["bmax"][t])
+        for v, (P, ga) in tang.items():
+            for ref in (lo, hi):
+                add(("lin", t, rv(abs(v - ref))), "arc_pos", dict(type="lin", axis=t, p1=anchor_pt(ref, None), p2=dict(P), hole_axis=ga))
+    # spacing between centres of equal, aligned partial arcs (e.g. the flat between two fillets)
+    parts_ = [g for g in F["cyl"] if not g["full"]]
+    for i, g1 in enumerate(parts_):
+        for g2 in parts_[i + 1:]:
+            if g1["axis"] != g2["axis"] or abs(g1["dia"] - g2["dia"]) > 1e-3:
+                continue
+            a, o = g1["axis"], g1["other"]
+            for k in (0, 1):
+                if abs(g1["c"][1 - k] - g2["c"][1 - k]) < 1e-3 and abs(g1["c"][k] - g2["c"][k]) > 0.05:
+                    zc = (g1["lo"] + g1["hi"]) / 2
+                    P1 = {a: zc, o[0]: g1["c"][0], o[1]: g1["c"][1]}; P2 = {a: zc, o[0]: g2["c"][0], o[1]: g2["c"][1]}
+                    add(("lin", o[k], rv(abs(g1["c"][k] - g2["c"][k]))), "arc_pitch",
+                        dict(type="lin", axis=o[k], p1=P1, p2=P2, hole_axis=a, pitch_r=g1["dia"] / 2,
+                             convex=not g1["internal"], dir=(P1[o[1 - k]] - g1["c"][1 - k])))
+    # angled walls: angles (single or included V angle) and corner positions in the top view
+    inc = F.get("incl") or dict(angles=[], corners=[], csk={})
+    for dm in inc["angles"]:
+        add(("ang", rv(dm["value"], 1)), "angle_incl" if dm.get("included") else "angle",
+            dict(type="ang", view=dm["view"], vertex=dm["vertex"], p_line=dm["p_line"], p_ref=dm["p_ref"], r=dm["r"]))
+    VAX = {"top": ("x", "y", "z"), "front": ("x", "z", "y"), "right": ("y", "z", "x")}
+    for dm in inc["corners"]:
+        h, v, n = VAX[dm["view"]]
+        P1 = {h: dm["p1"][0], v: dm["p1"][1], n: F["bmax"][n]}; P2 = {h: dm["p2"][0], v: dm["p2"][1], n: F["bmax"][n]}
+        add(("lin", dm["ax"], rv(dm["value"])), "incl_corner", dict(type="lin", axis=dm["ax"], p1=P1, p2=P2, hole_axis=n))
+    # countersinks on hole diameters (thread-entry chamfers excluded)
+    for (ax, dia), v in inc["csk"].items():
+        c = C.get(("dia", dia))
+        if c and "hole_dia" in c["srcs"]:
+            nom = float(c["thread"][1:]) if c.get("thread") else 0
+            if not (nom and v[0] <= 1.15 * nom):
+                c["csk"] = v
     # numeric attributes
     out = []
     for c in C.values():
@@ -197,7 +287,7 @@ def candidates(F):
 
 
 SOURCES = ["overall", "level_gap", "level_pos", "hole_dia", "ext_dia", "radius_concave", "radius_convex",
-           "hole_pos", "hole_pitch", "hole_span", "bolt_circle"]
+           "hole_pos", "hole_pitch", "hole_span", "bolt_circle", "angle", "angle_incl", "incl_corner", "arc_gap", "arc_pos", "arc_pitch"]
 
 
 def part_context(F, cands):
@@ -218,7 +308,7 @@ def feature_rows(F, cands):
         by_kind[(c["kind"], c["axis"])].append(c["value"])
     for c in cands:
         vals = sorted(by_kind[(c["kind"], c["axis"])])
-        r = dict(kind_lin=c["kind"] == "lin", kind_dia=c["kind"] == "dia", kind_rad=c["kind"] == "rad",
+        r = dict(kind_lin=c["kind"] == "lin", kind_dia=c["kind"] == "dia", kind_rad=c["kind"] == "rad", kind_ang=c["kind"] == "ang", has_csk=bool(c.get("csk")),
                  ax_x=c["axis"] == "x", ax_y=c["axis"] == "y", ax_z=c["axis"] == "z",
                  value=c["value"], rel_big=c["rel_big"], rel_axis=c["rel_axis"],
                  rank_in_kind=vals.index(c["value"]) / max(1, len(vals) - 1), n_in_kind=len(vals),

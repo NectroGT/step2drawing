@@ -91,9 +91,44 @@ def bbox2d(geoms):
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def _scaled(part, k):
+    """Copy of the part with geometry and dimension anchors scaled by k (drawing scale k:1)."""
+    S = lambda p: (p[0] * k, p[1] * k)
+    dims = []
+    for d in part["dims"]:
+        d = dict(d)
+        for f in ("p1", "p2", "c", "vertex", "p_line", "p_ref"):
+            if f in d:
+                d[f] = S(d[f])
+        for f in ("r", "at"):
+            if d.get(f) is not None:
+                d[f] = d[f] * k
+        dims.append(d)
+    centers = [dict(c, c=S(c["c"]), r=c["r"] * k) for c in part.get("centers", [])]
+    axes = []
+    for a in part.get("axes", []):
+        a = dict(a)
+        for f in ("p1", "p2", "center"):
+            if f in a:
+                a[f] = S(a[f])
+        if "circle" in a:
+            a["circle"] *= k
+        axes.append(a)
+    shape = part["shape"].val() if hasattr(part["shape"], "val") else part["shape"]
+    return dict(part, shape=shape.scale(k), dims=dims, centers=centers, axes=axes)
+
+
+def drawing_scale(size, units):
+    mm = size * {"inch": 25.4, "cm": 10.0, "m": 1000.0, "foot": 304.8}.get(units, 1.0)
+    return 5 if mm < 20 else 2 if mm < 50 else 1
+
+
 def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
     shape = part["shape"].val() if hasattr(part["shape"], "val") else part["shape"]
     size = max(shape.BoundingBox().xlen, shape.BoundingBox().ylen, shape.BoundingBox().zlen)
+    SCL = part.get("scale") or drawing_scale(size, part.get("units", "mm"))
+    if SCL != 1:
+        part = _scaled(part, SCL); shape = part["shape"]; size *= SCL
     th = max(2.5, round(size / 28, 1))         # text height
     gap = 9 * th                               # spacing between views (room for dims)
     sp = 2.6 * th                              # spacing between dimension tiers
@@ -103,14 +138,14 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
         vis, hid = project(shape, v)
         vg, seen = [], set()
         for g in map(edge_geom, vis):
-            k = gkey(g)
-            if k not in seen:
-                seen.add(k); vg.append(g)
+            gk = gkey(g)
+            if gk not in seen:
+                seen.add(gk); vg.append(g)
         hg = []
         for g in map(edge_geom, hid):   # drop hidden edges duplicated or covered by visible ones
-            k = gkey(g)
-            if k not in seen:
-                seen.add(k); hg.append(g)
+            gk = gkey(g)
+            if gk not in seen:
+                seen.add(gk); hg.append(g)
         proj[v] = (vg, hg)
     bb = {v: bbox2d(proj[v][0] + proj[v][1]) for v in VIEWS}
 
@@ -130,7 +165,7 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
         doc.layers.add(name, color=color, linetype=lt, lineweight=lw)
     msp = doc.modelspace()
     ds = dict(dimtxt=th, dimasz=th * 0.9, dimexo=th * 0.4, dimexe=th * 0.5, dimgap=th * 0.35,
-              dimdec=2, dimzin=8, dimdsep=ord('.'), dimlfac=1.0, dimtih=0, dimtoh=0, dimclrd=5, dimclre=5, dimclrt=7)
+              dimdec=2, dimzin=8, dimdsep=ord('.'), dimlfac=1.0 / SCL, dimtih=0, dimtoh=0, dimclrd=5, dimclre=5, dimclrt=7)
 
     def T(view, p):
         o = off[view]; return (p[0] + o[0], p[1] + o[1])
@@ -177,11 +212,11 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
                     xb = (x0 - dm["tier"] * sp if dm["side"] == "left" else x1 + dm["tier"] * sp) + off[v][0]
                 base, angle = (xb, (p1[1] + p2[1]) / 2), 90
                 meas = abs(p2[1] - p1[1])
-            assert abs(meas - dm["value"]) < 1e-3, (part_id, dm["name"], meas, dm["value"])
+            assert abs(meas / SCL - dm["value"]) < 1e-3, (part_id, dm["name"], meas / SCL, dm["value"])
             d = msp.add_linear_dim(base=base, p1=p1, p2=p2, angle=angle, text=dm.get("text") or "<>",
                                    override=ds, dxfattribs={"layer": "DIM"})
         elif dm["kind"] == "dia":
-            assert abs(2 * dm["r"] - dm["value"]) < 1e-3
+            assert abs(2 * dm["r"] / SCL - dm["value"]) < 1e-3
             txt = (dm.get("text") or "<>").replace("Ø<>", "<>")
             if len(txt) > 8:                 # long callout: leader out of the view, horizontal text
                 a_ = dm["angle"] if math.cos(math.radians(dm["angle"])) < 0 else 180 - dm["angle"]   # leader to the left
@@ -212,6 +247,20 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
             txt = (dm.get("text") or "<>").replace("<>", val)
             d = msp.add_angular_dim_3p(base=base, center=c, p1=pa, p2=pb, text=txt,
                                        override=ds, dxfattribs={"layer": "DIM"})
+        elif dm.get("outside"):              # convex arc: text outside the part, leader onto the arc
+            cx, cy = T(v, dm["c"]); ux, uy = math.cos(math.radians(dm["angle"])), math.sin(math.radians(dm["angle"]))
+            bx0, by0, bx1, by1 = x0 + off[v][0], y0 + off[v][1], x1 + off[v][0], y1 + off[v][1]
+            tx = ((bx1 if ux > 0 else bx0) - cx) / ux if abs(ux) > 1e-6 else 1e9
+            ty = ((by1 if uy > 0 else by0) - cy) / uy if abs(uy) > 1e-6 else 1e9
+            t = max(min(tx, ty), dm["r"]) + 1.5 * th
+            d = msp.add_radius_dim(center=(cx, cy), radius=dm["r"], location=(cx + t * ux, cy + t * uy),
+                                   text=(dm.get("text") or "<>").replace("R<>", "<>"),
+                                   override=dict(ds, dimtoh=1, dimtix=0), dxfattribs={"layer": "DIM"})
+        elif dm.get("inside") and dm["r"] > 2.2 * th:   # concave arc with room: text in the hollow, at the centre
+            cx, cy = T(v, dm["c"]); ux, uy = math.cos(math.radians(dm["angle"])), math.sin(math.radians(dm["angle"]))
+            d = msp.add_radius_dim(center=(cx, cy), radius=dm["r"], location=(cx - 0.15 * dm["r"] * ux, cy - 0.15 * dm["r"] * uy),
+                                   text=(dm.get("text") or "<>").replace("R<>", "<>"),
+                                   override=dict(ds, dimtih=1, dimtix=1), dxfattribs={"layer": "DIM"})
         else:
             d = msp.add_radius_dim(center=T(v, dm["c"]), radius=dm["r"], angle=dm["angle"],
                                    text=(dm.get("text") or "<>").replace("R<>", "<>"), override=ds, dxfattribs={"layer": "DIM"})
@@ -239,7 +288,7 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
     msp.add_lwpolyline([(tx, Y0), (X1, Y0), (X1, Y0 + 6 * th), (tx, Y0 + 6 * th)], close=True,
                        dxfattribs={"layer": "BORDER"})
     lines = [f"PART: {part_id}   FAMILY: {part['family'].upper()}",
-             f"UNITS: {part.get('units', 'mm').upper()}   SCALE: 1:1   THIRD ANGLE PROJECTION",
+             f"UNITS: {part.get('units', 'mm').upper()}   SCALE: {SCL}:1   THIRD ANGLE PROJECTION",
              "UNLESS NOTED: TOL ±0.1   MATERIAL: AL 6061-T6"]
     for i, s in enumerate(lines):
         msp.add_text(s, height=th * 0.9, dxfattribs={"layer": "TEXT"}).set_placement(
