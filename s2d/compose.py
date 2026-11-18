@@ -4,6 +4,7 @@ compose(cells, out_dxf, sheet=(420, 297), parts=[...], title_lines=[...])
   cells: list of dict(dxf=path, box=(x0, y0, x1, y1) on paper in mm, label="ITEM 1  PLATE  QTY 1")
 """
 import ezdxf
+from ezdxf import bbox
 from ezdxf.addons import Importer
 from ezdxf.math import Matrix44
 from ezdxf.enums import TextEntityAlignment
@@ -82,11 +83,19 @@ def render(dxf_path, pdf_path=None, png_path=None, sheet=(420, 297), dpi=150):
     from ezdxf.addons.drawing.config import Configuration, BackgroundPolicy, ColorPolicy
     doc = ezdxf.readfile(dxf_path)
     cfg = Configuration(background_policy=BackgroundPolicy.WHITE, color_policy=ColorPolicy.BLACK, lineweight_scaling=0.6)
-    W, H = sheet[0] / 25.4, sheet[1] / 25.4
+    if sheet is None:                     # fit the drawing's own extents (model-space drawings)
+        ext = bbox.extents(doc.modelspace())
+        x0, y0, x1, y1 = ext.extmin.x, ext.extmin.y, ext.extmax.x, ext.extmax.y
+        pad = 0.01 * max(x1 - x0, y1 - y0)
+        x0, y0, x1, y1 = x0 - pad, y0 - pad, x1 + pad, y1 + pad
+        W = 16.0; H = W * (y1 - y0) / (x1 - x0)
+    else:
+        x0, y0, x1, y1 = 0, 0, sheet[0], sheet[1]
+        W, H = sheet[0] / 25.4, sheet[1] / 25.4
     fig = plt.figure(figsize=(W, H)); ax = fig.add_axes([0, 0, 1, 1])
     Frontend(RenderContext(doc), MatplotlibBackend(ax), config=cfg).draw_layout(doc.modelspace(), finalize=True)
     fig.set_size_inches(W, H); ax.set_position([0, 0, 1, 1])
-    ax.set_xlim(0, sheet[0]); ax.set_ylim(0, sheet[1]); ax.set_aspect("equal")
+    ax.set_xlim(x0, x1); ax.set_ylim(y0, y1); ax.set_aspect("equal")
     if pdf_path: fig.savefig(pdf_path)
     if png_path: fig.savefig(png_path, dpi=dpi, facecolor="white")
     plt.close(fig)

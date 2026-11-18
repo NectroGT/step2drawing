@@ -57,7 +57,7 @@ def run(step_file, units):
     asm_png = os.path.join(out, "assembly.png")
     if os.path.exists(os.path.join(out, "assembly.dxf")):
         try:
-            render(os.path.join(out, "assembly.dxf"), png_path=asm_png, dpi=110)
+            render(os.path.join(out, "assembly.dxf"), png_path=asm_png, sheet=None, dpi=110)
             previews.append((asm_png, "Assembly"))
         except Exception:
             pass
