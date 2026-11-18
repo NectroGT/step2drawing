@@ -34,7 +34,6 @@ def _place(src_path, tdoc, box, label, pad=4.0, label_h=3.0):
                 e.transform(m)
             except Exception:
                 e.destroy() if e.is_alive else None
-    tmsp.add_lwpolyline([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], close=True, dxfattribs={"layer": "FRAME"})
     tmsp.add_text(label, height=label_h, dxfattribs={"layer": "TEXT"}).set_placement(
         (x0 + 2, y1 - 2), align=TextEntityAlignment.TOP_LEFT)
     return k
@@ -48,8 +47,6 @@ def compose(cells, out_dxf, sheet=(420, 297), parts=(), title_lines=(), table_bo
         if name not in doc.layers:
             doc.layers.add(name, color=color, lineweight=lw)
     msp = doc.modelspace()
-    W, H = sheet; m = 8
-    msp.add_lwpolyline([(m, m), (W - m, m), (W - m, H - m), (m, H - m)], close=True, dxfattribs={"layer": "BORDER"})
     scales = [_place(c["dxf"], doc, c["box"], c["label"]) for c in cells]
     # parts list + title block
     x0, y0, x1, y1 = table_box
