@@ -158,7 +158,7 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
             msp.add_line(T(a["view"], a["p1"]), T(a["view"], a["p2"]), dxfattribs={"layer": "CENTER"})
 
     # dimensions
-    placed = []
+    placed, long_n = [], {}
     for dm in part["dims"]:
         v = dm["view"]; x0, y0, x1, y1 = bb[v]
         if dm["kind"] in ("h", "v"):
@@ -182,8 +182,36 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
                                    override=ds, dxfattribs={"layer": "DIM"})
         elif dm["kind"] == "dia":
             assert abs(2 * dm["r"] - dm["value"]) < 1e-3
-            d = msp.add_diameter_dim(center=T(v, dm["c"]), radius=dm["r"], angle=dm["angle"],
-                                     text=(dm.get("text") or "<>").replace("Ø<>", "<>"), override=ds, dxfattribs={"layer": "DIM"})
+            txt = (dm.get("text") or "<>").replace("Ø<>", "<>")
+            if len(txt) > 8:                 # long callout: leader out of the view, horizontal text
+                a_ = dm["angle"] if math.cos(math.radians(dm["angle"])) < 0 else 180 - dm["angle"]   # leader to the left
+                cx, cy = T(v, dm["c"]); ux, uy = math.cos(math.radians(a_)), math.sin(math.radians(a_))
+                bx0, by0, bx1, by1 = x0 + off[v][0], y0 + off[v][1], x1 + off[v][0], y1 + off[v][1]
+                tx = ((bx1 if ux > 0 else bx0) - cx) / ux if abs(ux) > 1e-6 else 1e9
+                ty = ((by1 if uy > 0 else by0) - cy) / uy if abs(uy) > 1e-6 else 1e9
+                t = min(tx, ty) + 2.5 * th
+                loc = (cx + t * ux, cy + t * uy)
+                k = long_n.get(v, 0); long_n[v] = k + 1
+                if k:                                # stack further callouts above/below the first one
+                    loc = (loc[0], loc[1] + (k if uy >= 0 else -k) * 2.6 * th)
+                d = msp.add_diameter_dim(center=(cx, cy), radius=dm["r"], location=loc, text=txt,
+                                         override=dict(ds, dimtoh=1, dimtix=0), dxfattribs={"layer": "DIM"})
+            else:
+                d = msp.add_diameter_dim(center=T(v, dm["c"]), radius=dm["r"], angle=dm["angle"],
+                                         text=txt, override=ds, dxfattribs={"layer": "DIM"})
+        elif dm["kind"] == "ang":
+            c = T(v, dm["vertex"]); pa = T(v, dm["p_line"]); pb = T(v, dm["p_ref"])
+            if (pa[0] - c[0]) * (pb[1] - c[1]) - (pa[1] - c[1]) * (pb[0] - c[0]) < 0:
+                pa, pb = pb, pa                      # ezdxf measures counter-clockwise p1 -> p2
+            ua = math.atan2(pa[1] - c[1], pa[0] - c[0]); ub = math.atan2(pb[1] - c[1], pb[0] - c[0])
+            if ub < ua:
+                ub += 2 * math.pi
+            mid = (ua + ub) / 2
+            base = (c[0] + dm["r"] * math.cos(mid), c[1] + dm["r"] * math.sin(mid))
+            val = f'{dm["value"]:.1f}'.rstrip("0").rstrip(".") + "°"
+            txt = (dm.get("text") or "<>").replace("<>", val)
+            d = msp.add_angular_dim_3p(base=base, center=c, p1=pa, p2=pb, text=txt,
+                                       override=ds, dxfattribs={"layer": "DIM"})
         else:
             d = msp.add_radius_dim(center=T(v, dm["c"]), radius=dm["r"], angle=dm["angle"],
                                    text=(dm.get("text") or "<>").replace("R<>", "<>"), override=ds, dxfattribs={"layer": "DIM"})

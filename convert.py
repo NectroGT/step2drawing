@@ -21,6 +21,7 @@ import numpy as np, joblib
 import cadquery as cq
 from s2d.stepread import read_parts
 from s2d.features import extract, candidates, feature_rows, thread_of
+from s2d.inclined import analyze
 from s2d.select import to_specs, hole_centers, drop_redundant
 from s2d.drawing import make_drawing
 from s2d.assembly import make_assembly_drawing
@@ -98,14 +99,45 @@ def draw_part(solid, name, unit, M, folder):
         if "hole_dia" in c["srcs"] and not keep[i]:
             keep[i] = True; forced.append(c["key"])
     sel = drop_redundant([c for c, k in zip(C, keep) if k])
+    try:
+        extra = analyze(solid, F)
+    except Exception:
+        extra = dict(angles=[], corners=[], csk={})
+    for c in sel:                                   # countersink callouts on hole diameters
+        if "hole_dia" in c["srcs"]:
+            for (ax, dia), v in extra["csk"].items():
+                if abs(dia - c["value"]) < 1e-6:
+                    nom = float(re.sub(r"[^0-9.]", "", c["thread"]) or 0) if c.get("thread") else 0
+                    if not (nom and v[0] <= 1.15 * nom):     # thread-entry chamfer, not a countersink
+                        c["csk"] = v
     dims, _, axes = to_specs(sel)
+    base_dims = list(dims)
+    # rule-based dims the model has no candidates for yet: angled walls and their corners
+    dims += extra["angles"]
+    used = {(d["view"], d["kind"], round(d["value"], 2)) for d in dims if d["kind"] in ("h", "v")}
+    tiers = {}
+    for d in dims:
+        if d["kind"] in ("h", "v") and d.get("at") is None:
+            tiers[(d["view"], d["side"])] = max(tiers.get((d["view"], d["side"]), 0), d.get("tier", 0))
+    for d in sorted(extra["corners"], key=lambda d: d["value"]):
+        k = (d["view"], d["kind"], round(d["value"], 2))
+        if k in used:
+            continue
+        used.add(k)
+        tiers[(d["view"], d["side"])] = tiers.get((d["view"], d["side"]), 0) + 1
+        dims.append(dict(d, tier=tiers[(d["view"], d["side"])]))
+    n_rule = len(dims) - len(base_dims)
     part = dict(shape=cq.Compound.makeCompound([solid]), family=name, dims=dims, units=unit,
                 centers=hole_centers(F), axes=axes, notes=[])
     os.makedirs(folder, exist_ok=True)
-    make_drawing(part, name, os.path.join(folder, "drawing.dxf"), os.path.join(folder, "drawing.png"))
+    try:
+        make_drawing(part, name, os.path.join(folder, "drawing.dxf"), os.path.join(folder, "drawing.png"))
+    except Exception:                                # never lose a drawing to the rule-based extras
+        part["dims"] = base_dims; n_rule = 0
+        make_drawing(part, name, os.path.join(folder, "drawing.dxf"), os.path.join(folder, "drawing.png"))
     make_drawing(dict(part), name, os.path.join(folder, "drawing_bare.dxf"), None, frame=False)
     cq.exporters.export(shape, os.path.join(folder, "part.step"))
-    info = dict(n_candidates=len(C), n_selected=len(sel),
+    info = dict(n_candidates=len(C), n_selected=len(sel), n_rule_dims=n_rule,
                 selected=[dict(key=c["key"], prob=round(float(p), 3)) for c, p in zip(C, prob) if c in sel],
                 forced_hole_dia=forced, complex=len(C) > 120)
     json.dump(info, open(os.path.join(folder, "selected.json"), "w"), indent=1)

@@ -47,6 +47,9 @@ def to_specs(sel):
                 n = c["count"]
                 body = c["thread"] if (c.get("thread") and c["internal"]) else "Ø<>"
                 txt = (f"{n}X " if n > 1 else "") + body + (" THRU" if c["internal"] and c["through"] else "")
+                if c.get("csk"):
+                    cd, ca = c["csk"]
+                    txt += f" CSK Ø{cd:g} X {ca:g}°"
                 dims.append(dict(view=view, kind="dia", c=p2(view, a["center"]), r=a["r"], value=c["value"],
                                  name=json.dumps(c["key"]), angle=next_angle(view), text=txt))
         else:  # radius
