@@ -91,7 +91,13 @@ def draw_part(solid, name, unit, M, folder):
     rows = feature_rows(F, C)
     X = np.array([[float(r.get(f, 0)) for f in M["features"]] for r in rows])
     prob = M["model"].predict_proba(X)[:, 1]
-    sel = drop_redundant([c for c, p in zip(C, prob) if p > M["threshold"]])
+    keep = [p > M["threshold"] for p in prob]
+    # Drafting rule: every hole size must carry a diameter callout, whatever the model scored it.
+    forced = []
+    for i, c in enumerate(C):
+        if "hole_dia" in c["srcs"] and not keep[i]:
+            keep[i] = True; forced.append(c["key"])
+    sel = drop_redundant([c for c, k in zip(C, keep) if k])
     dims, _, axes = to_specs(sel)
     part = dict(shape=cq.Compound.makeCompound([solid]), family=name, dims=dims, units=unit,
                 centers=hole_centers(F), axes=axes, notes=[])
@@ -101,7 +107,7 @@ def draw_part(solid, name, unit, M, folder):
     cq.exporters.export(shape, os.path.join(folder, "part.step"))
     info = dict(n_candidates=len(C), n_selected=len(sel),
                 selected=[dict(key=c["key"], prob=round(float(p), 3)) for c, p in zip(C, prob) if c in sel],
-                complex=len(C) > 120)
+                forced_hole_dia=forced, complex=len(C) > 120)
     json.dump(info, open(os.path.join(folder, "selected.json"), "w"), indent=1)
     return F, info
 
@@ -194,7 +200,7 @@ def convert(path, out_root, M, units=None):
         bare = os.path.join(out, "assembly_bare.dxf")
         make_assembly_drawing(items, bare, None, title=title, units=unit, frame=False, iso_pos="above")
         one_sheet(items, part_dirs, bare, os.path.join(out, f"{stem}_one_sheet.dxf"), os.path.join(out, f"{stem}_one_sheet.pdf"), title, unit)
-    elif is_assembly:
+    elif is_assembly and len(items) > 8:
         report["warnings"].append(f"{len(items)} unique parts: too many for one sheet, see the multi-page PDF")
     with open(os.path.join(out, "bom.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f); w.writerow(["item", "qty", "name", "description", f"units"])
