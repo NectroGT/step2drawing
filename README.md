@@ -13,7 +13,7 @@ short_description: Upload a STEP file, get dimensioned drawings (PDF/DXF)
 
 # step2drawing: STEP file to engineering drawings
 
-Give it a `.stp` / `.step` file and you get a dimensioned drawing set back (PDF + DXF). Dimensions are picked by a trained model (gradient-boosted classifier over candidate dimensions), trained on 2,999 variants of 32 hand-reviewed real parts (weighted ×3) plus 2,999 synthetic parts.
+Give it a `.stp` / `.step` file and you get a dimensioned drawing set back (PDF + DXF). Dimensions are picked by a trained model (gradient-boosted classifier over candidate dimensions), trained on 3,400 variants of 34 hand-reviewed real parts (weighted ×3) plus 2,999 synthetic parts. It also handles angled walls, countersinks and arc-edge dimensions, and turns extruded parts so their profile is the front view.
 
 
 ## Use it in the browser
