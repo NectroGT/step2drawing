@@ -124,7 +124,9 @@ def drawing_scale(size, units):
     return 5 if mm < 20 else 2 if mm < 50 else 1
 
 
-def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
+def make_drawing(part, part_id, dxf_path, png_path=None, frame=True, _shift=None, _depth=0):
+    part_in = part
+    shift = _shift or {}
     shape = part["shape"].val() if hasattr(part["shape"], "val") else part["shape"]
     size = max(shape.BoundingBox().xlen, shape.BoundingBox().ylen, shape.BoundingBox().zlen)
     SCL = part.get("scale") or drawing_scale(size, part.get("units", "mm"))
@@ -163,6 +165,8 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
     off["top"] = (0.0, bb["front"][3] - bb["top"][1] + gap)
     off["right"] = (bb["front"][2] - bb["right"][0] + gapx, 0.0)
     off["iso"] = (bb["front"][2] - bb["iso"][0] + gapx, bb["front"][3] - bb["iso"][1] + gap)
+    for v_, (dx_, dy_) in shift.items():          # extra room found necessary on an earlier pass
+        off[v_] = (off[v_][0] + dx_, off[v_][1] + dy_)
     # align top view x-extents with front, right view z with front (same projection => automatic)
 
     doc = ezdxf.new("R2010", setup=True)
@@ -361,7 +365,7 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
             pts = [T(gv, p_) for p_ in pts]
             geo += list(zip(pts[:-1], pts[1:]))
 
-    placed, txt_boxes, dim_segs = [], [], []
+    placed, txt_boxes, dim_segs, by_view = [], [], [], {}
     # fixed-position dimensions first (their extension lines cannot move), movable callouts last
     order = {"h": 0, "v": 0, "ang": 1, "rad": 2, "dia": 2}
     view_boxes = [(bb[gv][0] + off[gv][0], bb[gv][1] + off[gv][1], bb[gv][2] + off[gv][0], bb[gv][3] + off[gv][1])
@@ -397,6 +401,42 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True):
         _, d, boxes, segs, cand = best
         txt_boxes += boxes; dim_segs += segs
         placed.append(cand)
+        by_view.setdefault(cand["view"], []).append(d.dimension)
+
+    # keep every view's dimensions clear of the other views: grow the gaps and lay the sheet out again
+    g_ = 1.5 * th
+    grp = {}
+    for gv in VIEWS:
+        X = [bb[gv][0] + off[gv][0], bb[gv][1] + off[gv][1], bb[gv][2] + off[gv][0], bb[gv][3] + off[gv][1]]
+        if by_view.get(gv):
+            e_ = ezdxf.bbox.extents(by_view[gv])
+            if e_.has_data:
+                X = [min(X[0], e_.extmin.x), min(X[1], e_.extmin.y), max(X[2], e_.extmax.x), max(X[3], e_.extmax.y)]
+        grp[gv] = X
+    need = {}
+    def hit(a, b):
+        return grp[a][0] < grp[b][2] + g_ and grp[b][0] < grp[a][2] + g_ and grp[a][1] < grp[b][3] + g_ and grp[b][1] < grp[a][3] + g_
+    def add_shift(v_, dx_, dy_):
+        ox, oy = need.get(v_, (0.0, 0.0)); need[v_] = (max(ox, dx_), max(oy, dy_))
+    if hit("front", "top"):
+        add_shift("top", 0.0, grp["front"][3] + g_ - grp["top"][1])
+    if hit("front", "right"):
+        add_shift("right", grp["front"][2] + g_ - grp["right"][0], 0.0)
+    if hit("top", "right"):
+        add_shift("right", grp["top"][2] + g_ - grp["right"][0], 0.0)
+    for a in ("front", "top", "right"):
+        if hit(a, "iso"):
+            dx_ = grp[a][2] + g_ - grp["iso"][0]; dy_ = grp[a][3] + g_ - grp["iso"][1]
+            add_shift("iso", dx_, 0.0) if dx_ <= dy_ else add_shift("iso", 0.0, dy_)
+    if need and _depth < 4:
+        tot = dict(shift)
+        for v_, (dx_, dy_) in need.items():
+            ox, oy = tot.get(v_, (0.0, 0.0)); tot[v_] = (ox + max(dx_, 0.0), oy + max(dy_, 0.0))
+        for v_ in ("top", "right"):              # the 3D view sits beyond both: keep it beyond them
+            if v_ in need:
+                ox, oy = tot.get("iso", (0.0, 0.0))
+                tot["iso"] = (ox + max(need[v_][0], 0.0), oy + max(need[v_][1], 0.0))
+        return make_drawing(part_in, part_id, dxf_path, png_path, frame, _shift=tot, _depth=_depth + 1)
 
     # notes
     for n in part.get("notes", []):
