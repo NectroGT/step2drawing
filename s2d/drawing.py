@@ -16,6 +16,39 @@ def _fit(self):
 
 
 _dc._CurvedDimensionLine.setup_text_and_arrow_fitting = _fit
+
+
+def _patch_mpl_backend():
+    """ezdxf calls ax.scatter for every batch of lines even when there are no zero-length dots; skip those calls."""
+    from ezdxf.addons.drawing import matplotlib as _m
+    if getattr(_m.MatplotlibBackend, "_s2d_fast", False):
+        return
+
+    def draw_solid_lines(self, lines, properties):
+        color = properties.color
+        lineweight = self.get_lineweight(properties)
+        _lines, px, py = [], [], []
+        z = self._get_z()
+        for s_, e_ in lines:
+            if s_.isclose(e_):
+                px.append(s_.x); py.append(s_.y)
+            else:
+                _lines.append(((s_.x, s_.y), (e_.x, e_.y)))
+        if px:
+            self.ax.scatter(px, py, s=_m.SCATTER_POINT_SIZE, c=color, zorder=z)
+        if _lines:
+            self.ax.add_collection(_m.LineCollection(_lines, linewidths=lineweight, color=color, zorder=z, capstyle="butt"))
+
+    _m.MatplotlibBackend.draw_solid_lines = draw_solid_lines
+    _m.MatplotlibBackend._s2d_fast = True
+
+
+try:
+    _patch_mpl_backend()
+except Exception:                       # never let a speed-up break drawing
+    pass
+
+DOCS = {}                               # dxf path -> document just written (saves re-reading it for the PDF)
 from ezdxf.enums import TextEntityAlignment
 from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
 from OCP.HLRAlgo import HLRAlgo_Projector
@@ -79,8 +112,48 @@ def edge_geom(e):
     if gt == "CIRCLE" and e.IsClosed():
         c = e.arcCenter(); return ("circle", (c.x, c.y), e.radius())
     n = 48 if gt in ("CIRCLE", "ELLIPSE") else 64
-    pts = e.positions([i / n for i in range(n + 1)])
-    return ("poly", [(p.x, p.y) for p in pts])
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    c = BRepAdaptor_Curve(e.wrapped)
+    u0, u1 = c.FirstParameter(), c.LastParameter()
+    pts = [c.Value(u0 + (u1 - u0) * i / n) for i in range(n + 1)]
+    return ("poly", [(p.X(), p.Y()) for p in pts])
+
+
+_PROJ = {}
+
+
+def _projected(shape):
+    """2D edge geometry of the four views, computed once per shape (re-layout passes reuse it)."""
+    key = id(shape)
+    hit = _PROJ.get(key)
+    if hit and hit[0] is shape:
+        return hit[1]
+    proj = {}
+    for v in VIEWS:
+        vis, hid = project(shape, v)
+        vg, seen = [], set()
+        for g in map(edge_geom, vis):
+            gk = gkey(g)
+            if gk not in seen:
+                seen.add(gk); vg.append(g)
+        hg = []
+        for g in map(edge_geom, hid):   # drop hidden edges duplicated or covered by visible ones
+            gk = gkey(g)
+            if gk not in seen:
+                seen.add(gk); hg.append(g)
+        proj[v] = (vg, hg)
+    if len(_PROJ) > 6:
+        _PROJ.clear()
+    _PROJ[key] = (shape, proj)
+    return proj
+
+
+def _scale_geom(g, k):
+    if g[0] == "line":
+        return ("line", (g[1][0] * k, g[1][1] * k), (g[2][0] * k, g[2][1] * k))
+    if g[0] == "circle":
+        return ("circle", (g[1][0] * k, g[1][1] * k), g[2] * k)
+    return ("poly", [(x * k, y * k) for x, y in g[1]])
 
 
 def gkey(g, nd=3):
@@ -129,7 +202,7 @@ def _scaled(part, k):
             a["circle"] *= k
         axes.append(a)
     shape = part["shape"].val() if hasattr(part["shape"], "val") else part["shape"]
-    return dict(part, shape=shape.scale(k), dims=dims, centers=centers, axes=axes)
+    return dict(part, shape=shape, dims=dims, centers=centers, axes=axes)     # views are scaled in 2D
 
 
 def drawing_scale(size, units):
@@ -143,6 +216,7 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True, _shift=None
     shape = part["shape"].val() if hasattr(part["shape"], "val") else part["shape"]
     size = max(shape.BoundingBox().xlen, shape.BoundingBox().ylen, shape.BoundingBox().zlen)
     SCL = part.get("scale") or drawing_scale(size, part.get("units", "mm"))
+    shape0 = shape
     if SCL != 1:
         part = _scaled(part, SCL); shape = part["shape"]; size *= SCL
     th = max(2.5, round(size / 28, 1))         # text height
@@ -157,20 +231,9 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True, _shift=None
     vt = max((d.get("tier", 1) for d in vdims if d.get("at") is None), default=0)
     gapx = gap + vt * (spv - sp)
 
-    proj = {}
-    for v in VIEWS:
-        vis, hid = project(shape, v)
-        vg, seen = [], set()
-        for g in map(edge_geom, vis):
-            gk = gkey(g)
-            if gk not in seen:
-                seen.add(gk); vg.append(g)
-        hg = []
-        for g in map(edge_geom, hid):   # drop hidden edges duplicated or covered by visible ones
-            gk = gkey(g)
-            if gk not in seen:
-                seen.add(gk); hg.append(g)
-        proj[v] = (vg, hg)
+    proj = _projected(shape0)
+    if SCL != 1:
+        proj = {v: ([_scale_geom(g, SCL) for g in vg], [_scale_geom(g, SCL) for g in hg]) for v, (vg, hg) in proj.items()}
     bb = {v: bbox2d(proj[v][0] + proj[v][1]) for v in VIEWS}
 
     # third-angle layout: top above front, right to the right of front, iso top-right
@@ -378,6 +441,21 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True, _shift=None
             pts = [T(gv, p_) for p_ in pts]
             geo += list(zip(pts[:-1], pts[1:]))
 
+    import numpy as np
+    _GA = np.array([a for a, _ in geo] or [(0.0, 0.0)][:0], dtype=float).reshape(-1, 2)
+    _GB = np.array([b for _, b in geo] or [(0.0, 0.0)][:0], dtype=float).reshape(-1, 2)
+    _GLO, _GHI = np.minimum(_GA, _GB), np.maximum(_GA, _GB)
+    _TS = np.array([0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0])
+
+    def geo_hits(bx):                                   # vectorised seg_hits_box over all part edges
+        x0_, y0_, x1_, y1_ = bx
+        m = (_GHI[:, 0] >= x0_) & (_GLO[:, 0] <= x1_) & (_GHI[:, 1] >= y0_) & (_GLO[:, 1] <= y1_)
+        if not m.any():
+            return 0
+        a, b = _GA[m], _GB[m]
+        px = a[:, :1] + _TS * (b[:, :1] - a[:, :1]); py = a[:, 1:] + _TS * (b[:, 1:] - a[:, 1:])
+        return int(((px >= x0_) & (px <= x1_) & (py >= y0_) & (py <= y1_)).any(axis=1).sum())
+
     placed, txt_boxes, dim_segs, by_view = [], [], [], {}
     # fixed-position dimensions first (their extension lines cannot move), movable callouts last
     order = {"h": 0, "v": 0, "ang": 1, "rad": 2, "dia": 2}
@@ -396,7 +474,7 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True, _shift=None
             for bx in boxes:
                 score += sum(100.0 * (1 + ovl(bx, q)) for q in txt_boxes if ovl(bx, q) > 0)
                 score += sum(3.0 for a, b in dim_segs if seg_hits_box(a, b, bx))
-                score += sum(1.0 for a, b in geo if seg_hits_box(a, b, bx))
+                score += float(geo_hits(bx))
                 if free_text:                            # text that is meant to sit outside the views
                     score += sum(20.0 for q in view_boxes if ovl(bx, q) > 0)
             for a, b in segs:                            # this dimension's lines through earlier text
@@ -481,6 +559,7 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True, _shift=None
         msp.add_text(s, height=th * 0.9, dxfattribs={"layer": "TEXT"}).set_placement(
             (tx + th, Y0 + 6 * th - (i + 1) * 1.8 * th), align=TextEntityAlignment.BOTTOM_LEFT)
     doc.saveas(dxf_path)
+    DOCS[os.path.abspath(dxf_path)] = doc
 
     if png_path:
         import matplotlib; matplotlib.use("Agg")

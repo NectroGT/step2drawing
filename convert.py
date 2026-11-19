@@ -200,7 +200,8 @@ def package_pdf(sheets, pdf_path, title, unit):
     cfg = Configuration(background_policy=BackgroundPolicy.WHITE, color_policy=ColorPolicy.BLACK)
     with PdfPages(pdf_path) as pdf:
         for n, (path, label) in enumerate(sheets, 1):
-            doc, _ = recover.readfile(path)
+            from s2d.drawing import DOCS
+            doc = DOCS.pop(os.path.abspath(path), None) or recover.readfile(path)[0]
             fig = plt.figure(figsize=(W, H)); ax = fig.add_axes([0.03, 0.05, 0.94, 0.9])
             Frontend(RenderContext(doc), MatplotlibBackend(ax), config=cfg).draw_layout(doc.modelspace(), finalize=True)
             fig.set_size_inches(W, H); ax.set_position([0.03, 0.05, 0.94, 0.9]); ax.set_aspect("equal", adjustable="datalim")

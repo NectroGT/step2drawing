@@ -2,7 +2,7 @@
 
 Runs on Hugging Face Spaces (Gradio SDK) or locally:  python app.py
 """
-import glob, html, os, shutil, tempfile, uuid, zipfile
+import collections, glob, hashlib, html, os, shutil, tempfile, uuid, zipfile
 
 import gradio as gr
 import joblib
@@ -14,6 +14,9 @@ MODEL = joblib.load(os.path.join(HERE, "models", "selector_combined.joblib"))
 MAX_MB = 50
 UNIT_CHOICES = ["From file", "mm", "inch", "cm", "m"]
 UNIT_MM = {"inch": 25.4, "mm": 1.0, "cm": 10.0, "m": 1000.0}
+_CACHE = collections.OrderedDict()     # (file hash, units, model) -> finished result; same upload again is instant
+_CACHE_MAX = 20
+_MODEL_ID = os.path.getmtime(os.path.join(HERE, "models", "selector_combined.joblib"))
 
 
 def _zip_dir(folder, zip_path):
@@ -58,6 +61,14 @@ def run(step_file, units):
     if os.path.getsize(path) > MAX_MB * 1024 * 1024:
         raise gr.Error(f"File is larger than {MAX_MB} MB.")
 
+    with open(path, "rb") as fh:
+        key = (hashlib.sha256(fh.read()).hexdigest(), units, _MODEL_ID)
+    hit = _CACHE.get(key)
+    if hit and all(os.path.exists(f) for f in hit[0]):
+        _CACHE.move_to_end(key)
+        files, previews, summary = hit
+        return gr.File(value=files, visible=True), gr.Gallery(value=previews, visible=True), summary
+
     work = os.path.join(tempfile.gettempdir(), "s2d_" + uuid.uuid4().hex[:10])
     os.makedirs(work)
     force = (units, UNIT_MM[units]) if units in UNIT_MM else None
@@ -89,7 +100,12 @@ def run(step_file, units):
         if hits:
             previews.append((hits[0], f"{p['item']}. {p['name']} ×{p['qty']}"))
 
-    return gr.File(value=files, visible=True), gr.Gallery(value=previews, visible=True), _summary_html(r)
+    summary = _summary_html(r)
+    _CACHE[key] = (files, previews, summary)
+    while len(_CACHE) > _CACHE_MAX:
+        _, (old_files, _, _) = _CACHE.popitem(last=False)
+        shutil.rmtree(os.path.dirname(old_files[-1]), ignore_errors=True)     # the zip sits in the work folder
+    return gr.File(value=files, visible=True), gr.Gallery(value=previews, visible=True), summary
 
 
 THEME = gr.themes.Soft(
