@@ -1,5 +1,5 @@
 {
- "_source": "Dimension Review page, read 2026-11-18 13:58 SGT (34 parts; 10 updated: angles, corners, arc dims, WallHook, CableClip)",
+ "_source": "Dimension Review page, read 2026-11-19 08:33 SGT (35 parts; + vs_training test block, pocket options)",
  "_not_edited": [
   "538_34_6_6",
   "as1_bolt",
@@ -1196,6 +1196,122 @@
     "lin",
     "x",
     18.5
+   ]
+  ]
+ },
+ "vs_training": {
+  "keep": [
+   [
+    "rad",
+    4.0
+   ],
+   [
+    "lin",
+    "x",
+    170.0
+   ],
+   [
+    "dia",
+    90.0
+   ],
+   [
+    "dia",
+    60.0
+   ],
+   [
+    "rad",
+    5.0
+   ],
+   [
+    "dia",
+    6.0
+   ],
+   [
+    "lin",
+    "y",
+    120.0
+   ],
+   [
+    "dia",
+    8.0
+   ],
+   [
+    "dia",
+    75.0
+   ],
+   [
+    "dia",
+    10.0
+   ],
+   [
+    "lin",
+    "z",
+    70.0
+   ],
+   [
+    "lin",
+    "y",
+    25.0
+   ],
+   [
+    "lin",
+    "x",
+    10.0
+   ],
+   [
+    "lin",
+    "x",
+    20.0
+   ],
+   [
+    "lin",
+    "x",
+    75.0
+   ],
+   [
+    "lin",
+    "y",
+    5.0
+   ],
+   [
+    "lin",
+    "z",
+    10.0
+   ],
+   [
+    "lin",
+    "y",
+    20.0
+   ],
+   [
+    "lin",
+    "z",
+    40.0
+   ],
+   [
+    "lin",
+    "z",
+    44.0
+   ],
+   [
+    "lin",
+    "x",
+    124.0
+   ],
+   [
+    "lin",
+    "x",
+    25.0
+   ],
+   [
+    "lin",
+    "x",
+    130.0
+   ],
+   [
+    "lin",
+    "z",
+    50.0
    ]
   ]
  },
