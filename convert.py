@@ -84,6 +84,49 @@ def describe(F, dims):
     return d + (", " + ", ".join(holes[:2]) if holes else "")
 
 
+def complete_features(F, C, keep):
+    """Drafting rules applied after the model: a dimensioned pocket gets length, width and depth, and a
+    flat that covers much of the part (a base plate) gets its thickness."""
+    from s2d.features import rv
+    idx = {tuple(c["key"]): i for i, c in enumerate(C)}
+    added = []
+
+    def take(key, why=""):
+        i = idx.get(key)
+        if i is not None and not keep[i]:
+            keep[i] = True; added.append(list(key) + [why])
+
+    big = max(F["ext"].values())
+    for fl in F.get("floors", []):
+        if fl["area"] < 0.01 * big * big:
+            continue
+        a = fl["axis"]; o = [t for t in "xyz" if t != a]
+        sizes = [("lin", t, rv(fl["hi"][t] - fl["lo"][t])) for t in o
+                 if 0.05 < fl["hi"][t] - fl["lo"][t] < F["ext"][t] - 0.05]
+        d_ = fl.get("depth", 0.0)
+        if len(sizes) == 2 and 0.1 * min(k[2] for k in sizes) <= d_ < min(k[2] for k in sizes):   # a real pocket floor
+            if any(keep[idx[k]] and "pocket_size" in C[idx[k]]["srcs"] for k in sizes if k in idx):
+                for k in sizes + [("lin", a, rv(d_))]:
+                    take(k, f"pocket {a}={rv(fl['level'])} {[x[2] for x in sizes]} depth {rv(d_)}")
+    # a big flat (base plate top), possibly split into strips at the same height: its height from the
+    # nearer outside face
+    tot = {}
+    for fl in F.get("floors", []):
+        k = (fl["axis"], rv(fl["level"]))
+        tot[k] = tot.get(k, 0.0) + fl["area"]
+    for (a, lv), area in tot.items():
+        foot = 1.0
+        for t in "xyz":
+            if t != a:
+                foot *= F["ext"][t]
+        turned = any(g["full"] and g["axis"] == a and g["dia"] >= 0.5 * max(F["ext"][t] for t in "xyz" if t != a)
+                     for g in F["cyl"])
+        near = min(lv - F["bmin"][a], F["bmax"][a] - lv)
+        if area >= 0.5 * foot and near <= 0.35 * F["ext"][a] and not turned:
+            take(("lin", a, rv(min(lv - F["bmin"][a], F["bmax"][a] - lv))), f"plate {a}={lv} area {round(area)}/{round(foot)}")
+    return keep, added
+
+
 def draw_part(solid, name, unit, M, folder):
     solid, turned = orient(solid)
     shape = cq.Workplane().add(solid)
@@ -101,6 +144,7 @@ def draw_part(solid, name, unit, M, folder):
             keep[i] = True; forced.append(c["key"])
     if "src_angle" not in M["features"]:
         keep = [k and c["kind"] != "ang" and "incl_corner" not in c["srcs"] for c, k in zip(C, keep)]
+    keep, completed = complete_features(F, C, keep)
     sel = drop_redundant([c for c, k in zip(C, keep) if k])
     uniq = []                                        # same callout twice from rounding noise (75 vs 75.001)
     for c in sel:
@@ -139,7 +183,7 @@ def draw_part(solid, name, unit, M, folder):
     cq.exporters.export(shape, os.path.join(folder, "part.step"))
     info = dict(n_candidates=len(C), n_selected=len(sel), n_rule_dims=n_rule,
                 selected=[dict(key=c["key"], prob=round(float(p), 3)) for c, p in zip(C, prob) if c in sel],
-                forced_hole_dia=forced, turned=turned, complex=len(C) > 120)
+                forced_hole_dia=forced, completed=completed, turned=turned, complex=len(C) > 120)
     json.dump(info, open(os.path.join(folder, "selected.json"), "w"), indent=1)
     return F, info
 

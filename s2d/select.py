@@ -60,7 +60,7 @@ def to_specs(sel):
                                  name=json.dumps(c["key"]), angle=next_angle(view), text=txt))
         elif a["type"] == "ang":
             dims.append(dict(view=a["view"], kind="ang", vertex=a["vertex"], p_line=a["p_line"], p_ref=a["p_ref"],
-                             r=a["r"], value=c["value"], name=json.dumps(c["key"])))
+                             r=a["r"], value=c["value"], name=json.dumps(c["key"]), text=a.get("text")))
         else:  # radius
             view = CIRCLE_VIEW[a["axis"]]
             dims.append(dict(view=view, kind="rad", c=p2(view, a["center"]), r=a["r"], value=c["value"],

@@ -3,6 +3,19 @@ import math, os
 _DEBUG = bool(os.environ.get('S2D_DEBUG'))
 import cadquery as cq
 import ezdxf
+import ezdxf.render.dim_curved as _dc
+
+_fit0 = _dc._CurvedDimensionLine.setup_text_and_arrow_fitting
+
+
+def _fit(self):
+    # our angle text sits horizontally beside the arc, so only the arrows need room on it
+    _fit0(self)
+    self.arrows_outside = not _dc.fits_into_arc_span(2.2 * self.arrows.arrow_size, self.dim_line_radius,
+                                                      self.arc_angle_span_rad)
+
+
+_dc._CurvedDimensionLine.setup_text_and_arrow_fitting = _fit
 from ezdxf.enums import TextEntityAlignment
 from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
 from OCP.HLRAlgo import HLRAlgo_Projector
@@ -452,7 +465,10 @@ def make_drawing(part, part_id, dxf_path, png_path=None, frame=True, _shift=None
     ext = ezdxf.bbox.extents(msp)
     m = 4 * th
     X0, Y0, X1, Y1 = ext.extmin.x - m, ext.extmin.y - m - 7 * th, ext.extmax.x + m, ext.extmax.y + m
-    tbw = 42 * th
+    lines = [f"PART: {part_id}   FAMILY: {part['family'].upper()}",
+             f"UNITS: {part.get('units', 'mm').upper()}   SCALE: {SCL}:1   THIRD ANGLE PROJECTION",
+             "UNLESS NOTED: TOL ±0.1   MATERIAL: AL 6061-T6"]
+    tbw = max(42 * th, max(len(t) for t in lines) * 0.62 * th + 2 * th)   # wide enough for its text
     X0 = min(X0, X1 - tbw - 2 * th)          # keep the title block inside the border
     msp.add_lwpolyline([(X0, Y0), (X1, Y0), (X1, Y1), (X0, Y1)], close=True, dxfattribs={"layer": "BORDER"})
     tx = X1 - tbw

@@ -76,7 +76,8 @@ def extract(shape):
                 lv = getattr(f.Center(), a)
                 if bmin[a] + 1e-3 < lv < bmax[a] - 1e-3:           # recessed or raised flat: pocket floor, step
                     fb = f.BoundingBox()
-                    floors.append(dict(axis=a, level=lv, area=f.Area(),
+                    nrm = getattr(f.normalAt(f.Center()), a)          # outward normal: points into the pocket
+                    floors.append(dict(axis=a, level=lv, area=f.Area(), up=1 if nrm > 0 else -1, face=f,
                                        lo={"x": fb.xmin, "y": fb.ymin, "z": fb.zmin},
                                        hi={"x": fb.xmax, "y": fb.ymax, "z": fb.zmax}))
         elif gt == "CYLINDER":
@@ -126,6 +127,28 @@ def extract(shape):
     for g in cyl.values():
         if g["full"] and g["internal"]:
             hg[(g["axis"], g["dia"])].append(g)
+    # pocket depth of each floor: how far the faces sharing an edge with it rise on its open side
+    if floors:
+        from OCP.TopExp import TopExp
+        from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+        from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+        emap = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(comp.wrapped, TopAbs_EDGE, TopAbs_FACE, emap)
+        for fl in floors:
+            a = fl["axis"]; far = 0.0
+            for e in fl["face"].Edges():
+                i = emap.FindIndex(e.wrapped)
+                if not i:
+                    continue
+                for nf in emap.FindFromIndex(i):
+                    if nf.IsSame(fl["face"].wrapped):
+                        continue
+                    nb = cq.Face(nf).BoundingBox()
+                    lo_, hi_ = {"x": (nb.xmin, nb.xmax), "y": (nb.ymin, nb.ymax), "z": (nb.zmin, nb.zmax)}[a]
+                    far = max(far, (hi_ - fl["level"]) if fl["up"] > 0 else (fl["level"] - lo_))
+            fl["depth"] = far
+    for fl in floors:
+        fl.pop("face", None)
     F = dict(solids=len(solids), bmin=bmin, bmax=bmax, floors=floors,
              ext={a: bmax[a] - bmin[a] for a in AX}, cyl=list(cyl.values()),
              holes={k: v for k, v in hg.items()}, levels={a: sorted(v) for a, v in levels.items()})
@@ -292,7 +315,8 @@ def candidates(F):
     inc = F.get("incl") or dict(angles=[], corners=[], csk={})
     for dm in inc["angles"]:
         add(("ang", rv(dm["value"], 1)), "angle_incl" if dm.get("included") else "angle",
-            dict(type="ang", view=dm["view"], vertex=dm["vertex"], p_line=dm["p_line"], p_ref=dm["p_ref"], r=dm["r"]))
+            dict(type="ang", view=dm["view"], vertex=dm["vertex"], p_line=dm["p_line"], p_ref=dm["p_ref"], r=dm["r"],
+                 text=dm.get("text")))
     VAX = {"top": ("x", "y", "z"), "front": ("x", "z", "y"), "right": ("y", "z", "x")}
     for dm in inc["corners"]:
         h, v, n = VAX[dm["view"]]

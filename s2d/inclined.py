@@ -153,6 +153,42 @@ def analyze(solid, F):
             m = lines[mirror]
             X = _intersect(ln, m)
             used.update((i, mirror))
+            hb = (F["bmin"][h] - 1e-6, F["bmax"][h] + 1e-6); vb = (F["bmin"][v] - 1e-6, F["bmax"][v] + 1e-6)
+            if X is not None and not (hb[0] <= X[0] <= hb[1] and vb[0] <= X[1] <= vb[1]):
+                # the two faces meet outside the part (bevelled corners): dimension the real corner,
+                # measured inside the material, once for the pair
+                end = min((ln["a"], ln["b"]), key=lambda p: math.dist(p, X))
+                far1 = max((ln["a"], ln["b"]), key=lambda p: math.dist(p, X))
+                best = None
+                for o in _axis_lines(solid, ln["view"]):
+                    P = _intersect(ln, o)
+                    if P is None:
+                        continue
+                    dd = math.dist(P, end)
+                    if dd <= max(3.0, 0.08 * size) and _seg_dist(P, o) <= max(3.0, 0.08 * size) and (best is None or dd < best[0]):
+                        best = (dd, P, o)
+                on_box = lambda q: any(abs(q[0] - F[b][h]) < 1e-3 or abs(q[1] - F[b][v]) < 1e-3 for b in ("bmin", "bmax"))
+                if best and not (on_box(best[1]) and on_box(far1)):
+                    best = None                       # only bevels that cut an outer corner of the silhouette
+                if best:
+                    _, P, o = best
+                    na = math.atan2(ln["n"][1], ln["n"][0])
+                    # the adjacent face's outward normal: away from the part's middle
+                    mid = ((F["bmin"][h] + F["bmax"][h]) / 2, (F["bmin"][v] + F["bmax"][v]) / 2)
+                    m = o["n"] if (P[0] - mid[0]) * o["n"][0] + (P[1] - mid[1]) * o["n"][1] > 0 else (-o["n"][0], -o["n"][1])
+                    if ln["n"][0] * (P[0] - mid[0]) + ln["n"][1] * (P[1] - mid[1]) < 0:
+                        na += math.pi
+                    dn = abs((math.degrees(na - math.atan2(m[1], m[0])) + 180) % 360 - 180)
+                    val = _r(180 - dn, 1)
+                    key = (ln["view"], val)
+                    if key not in seen:
+                        seen.add(key)
+                        oa, ob = o["a"], o["b"]
+                        refp = max((oa, ob), key=lambda q: math.dist(q, P))     # along the adjacent face, into the part
+                        r = min(0.35 * math.dist(far1, P), 0.35 * math.dist(refp, P), 5 * th)
+                        angles.append(dict(view=ln["view"], kind="ang", vertex=P, p_line=far1, p_ref=refp, r=r,
+                                           value=val, included=True, text="2X <>", name=f'["ang", "{ln["view"]}", {val}]'))
+                    continue
             if X is not None:
                 val = _r(2 * (90 - a_h), 1) if a_h > 45 else _r(2 * a_h, 1)
                 key = (ln["view"], val)
